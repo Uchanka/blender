@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-generic_blender_mrq_v4.py
-Version: 2026-07-10-v4-write-check
+generic_blender_mrq_v13_fileoutput_recreate_item.py
+Version: 2026-07-10-v13-file-output-recreate-item-arg-debug
 
 Scene-agnostic Blender command-line render driver for UE-MRQ-like jittered output.
-This version deliberately avoids OPEN_EXR_MULTILAYER because some Blender builds
-only expose OPEN_EXR in scene.render.image_settings.file_format.
+This version keeps the beauty render as regular OPEN_EXR and uses temporary
+Compositor File Output nodes to save Depth/Z and Vector passes as separate EXRs.
 
 Run:
-  blender -b scene.blend -P generic_blender_mrq_v4.py -- --out C:/tmp/mrq_out --start 1 --end 1 --samples 64 --jitter pmj --save-all-subsamples
+  blender -b scene.blend -P generic_blender_mrq_v6_passes.py -- --out C:/tmp/mrq_out --start 1 --end 1 --samples 64 --jitter pmj --save-all-subsamples
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import List, Tuple
 
 import bpy
 
-VERSION = "2026-07-10-v4-write-check"
+VERSION = "2026-07-10-v13-file-output-recreate-item-arg-debug"
 
 # -----------------------------------------------------------------------------
 # UE-like jitter helpers
@@ -134,6 +134,15 @@ class SampleRecord:
     exists: bool
     bytes: int
     is_chosen: bool
+    depth_path: str = ""
+    depth_exists: bool = False
+    depth_bytes: int = 0
+    vector_path: str = ""
+    vector_exists: bool = False
+    vector_bytes: int = 0
+    mvdepth_path: str = ""
+    mvdepth_exists: bool = False
+    mvdepth_bytes: int = 0
 
 
 def enum_values(owner, prop_name: str) -> set[str]:
@@ -148,7 +157,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         argv = argv[argv.index("--") + 1:]
     else:
         argv = []
-    p = argparse.ArgumentParser(description="Generic Blender MRQ-like jittered render driver v4")
+    p = argparse.ArgumentParser(description="Generic Blender MRQ-like jittered render driver v5 fixed")
     p.add_argument("--out", default="//mrq_out")
     p.add_argument("--start", type=int, default=None)
     p.add_argument("--end", type=int, default=None)
@@ -161,13 +170,19 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--resolution-y", type=int, default=None)
     p.add_argument("--engine", choices=["CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH"], default=None)
     p.add_argument("--cycles-render-samples", type=int, default=1)
-    p.add_argument("--save-all-subsamples", action="store_true")
+    p.add_argument("--output-mode", choices=["all", "chosen", "both"], default="all",
+                   help="all: write sample_XXXX for every subsample; chosen: only write chosen_sample; both: write all samples and an extra chosen_sample copy")
+    p.add_argument("--save-all-subsamples", action="store_true",
+                   help="Compatibility alias: forces --output-mode all unless --output-mode both was explicitly supplied")
+    p.add_argument("--only-chosen", action="store_true", help="Compatibility alias for --output-mode chosen")
     p.add_argument("--keep-temp", action="store_true", help="Alias for --save-all-subsamples")
     p.add_argument("--view-transform", default="Standard")
     p.add_argument("--look", default="None")
     p.add_argument("--exr-codec", default="ZIP")
     p.add_argument("--half", action="store_true", default=True)
     p.add_argument("--debug", action="store_true")
+    p.add_argument("--no-passes", action="store_true", help="Do not create compositor outputs for depth/vector passes")
+    p.add_argument("--pass-color-depth", choices=["16", "32"], default="16", help="OpenEXR bit depth for depth/vector pass files")
     p.add_argument("--dry-run", action="store_true", help="Do not render, just write manifest and print planned paths")
     return p.parse_args(argv)
 
@@ -195,7 +210,7 @@ def configure_scene(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
     try:
         scene.view_settings.view_transform = args.view_transform
     except Exception:
-        print(f"[MRQ v4] warning: view_transform {args.view_transform!r} unavailable; keeping {scene.view_settings.view_transform!r}")
+        print(f"[MRQ v13] warning: view_transform {args.view_transform!r} unavailable; keeping {scene.view_settings.view_transform!r}")
     try:
         scene.view_settings.look = args.look
     except Exception:
@@ -224,6 +239,13 @@ def configure_scene(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
             vl.use_pass_z = True
         if hasattr(vl, "use_pass_vector"):
             vl.use_pass_vector = True
+        # Some Blender versions expose motion-vector-related toggles under different names.
+        for attr in ("use_pass_motion", "use_pass_motion_vector"):
+            if hasattr(vl, attr):
+                try:
+                    setattr(vl, attr, True)
+                except Exception:
+                    pass
 
 
 def choose_camera(scene: bpy.types.Scene, name: str | None) -> bpy.types.Object:
@@ -303,7 +325,414 @@ def check_or_save_render_result(scene: bpy.types.Scene, requested: str, frame: i
     )
 
 
-def render_sample(scene: bpy.types.Scene, cam: bpy.types.Object, path: str, frame: int, jx: float, jy: float, args: argparse.Namespace) -> Tuple[bool, int]:
+
+# -----------------------------------------------------------------------------
+# Temporary compositor pass output helpers
+# -----------------------------------------------------------------------------
+
+TEMP_NODE_PREFIX = "__MRQ_TEMP_PASS__"
+
+
+def get_compositor_tree(scene: bpy.types.Scene, create: bool = True):
+    """Return the compositor node tree across Blender 4.x and 5.x.
+
+    Blender 5 removed scene.node_tree and replaced it with
+    scene.compositing_node_group. Blender 4.x still uses scene.node_tree and
+    creates it when scene.use_nodes is enabled.
+    """
+    # Blender 4.x / legacy path.
+    if hasattr(scene, "node_tree"):
+        if create and hasattr(scene, "use_nodes"):
+            try:
+                scene.use_nodes = True
+            except Exception:
+                pass
+        return getattr(scene, "node_tree", None)
+
+    # Blender 5.x path.
+    if hasattr(scene, "compositing_node_group"):
+        tree = getattr(scene, "compositing_node_group", None)
+        if tree is None and create:
+            # In Blender 5 the compositor node tree is an explicit datablock.
+            tree = bpy.data.node_groups.new(name=f"{scene.name}_MRQ_Compositor", type="CompositorNodeTree")
+            scene.compositing_node_group = tree
+        return tree
+
+    return None
+
+
+def _enable_compositor(scene: bpy.types.Scene) -> None:
+    # Blender 4.x property; Blender 5 deprecates/ignores it, so guard it.
+    if hasattr(scene, "use_nodes"):
+        try:
+            scene.use_nodes = True
+        except Exception:
+            pass
+    # Blender 5 uses Output Properties > Post Processing > Compositing.
+    if hasattr(scene.render, "use_compositing"):
+        try:
+            scene.render.use_compositing = True
+        except Exception:
+            pass
+
+
+def _remove_temp_compositor_nodes(scene: bpy.types.Scene) -> None:
+    tree = get_compositor_tree(scene, create=False)
+    if tree is None:
+        return
+    for node in list(tree.nodes):
+        if node.name.startswith(TEMP_NODE_PREFIX) or node.label.startswith(TEMP_NODE_PREFIX):
+            tree.nodes.remove(node)
+
+
+def _find_output_socket(node: bpy.types.Node, names: List[str]):
+    wanted = {n.lower() for n in names}
+    for sock in node.outputs:
+        if sock.name.lower() in wanted:
+            return sock
+    # Loose fallback for localized/minor name differences.
+    for sock in node.outputs:
+        low = sock.name.lower()
+        if any(n.lower() in low for n in names):
+            return sock
+    return None
+
+
+def _apply_image_format_settings(fmt, args: argparse.Namespace, color_mode: str) -> None:
+    if fmt is None:
+        return
+    if hasattr(fmt, "file_format"):
+        try:
+            fmt.file_format = "OPEN_EXR"
+        except Exception:
+            pass
+    if hasattr(fmt, "color_depth"):
+        vals = enum_values(fmt, "color_depth")
+        if args.pass_color_depth in vals:
+            try:
+                fmt.color_depth = args.pass_color_depth
+            except Exception:
+                pass
+    if hasattr(fmt, "exr_codec"):
+        vals = enum_values(fmt, "exr_codec")
+        if not vals or args.exr_codec in vals:
+            try:
+                fmt.exr_codec = args.exr_codec
+            except Exception:
+                pass
+    if hasattr(fmt, "color_mode"):
+        vals = enum_values(fmt, "color_mode")
+        if color_mode in vals:
+            try:
+                fmt.color_mode = color_mode
+            except Exception:
+                pass
+
+
+def _set_file_output_format(node: bpy.types.Node, args: argparse.Namespace, color_mode: str) -> None:
+    # Blender 4.x exposes node.format. Blender 5.x can expose per-item formats.
+    _apply_image_format_settings(getattr(node, "format", None), args, color_mode)
+    items = getattr(node, "file_output_items", None)
+    if items is not None:
+        for item in items:
+            _apply_image_format_settings(getattr(item, "format", None), args, color_mode)
+
+
+def _set_file_output_directory(node: bpy.types.Node, frame_dir: str) -> None:
+    # Blender <=4.x uses base_path; Blender 5.x renamed it to directory.
+    if hasattr(node, "base_path"):
+        node.base_path = frame_dir
+    elif hasattr(node, "directory"):
+        node.directory = frame_dir
+    else:
+        print("[MRQ v13] warning: File Output node has neither base_path nor directory", flush=True)
+
+
+def _set_file_output_prefix(node: bpy.types.Node, prefix_without_extension: str, color_mode: str) -> int:
+    """Configure one File Output node and return the input index to link.
+
+    v13 fixes the v12 failure mode shown by inputs=[''] and no pass files. In
+    Blender 5, the default File Output input can exist but not be backed by a
+    real file_output_item. We remove every default item, create exactly one new
+    item, and link input 0.
+    """
+    if hasattr(node, "file_slots") and len(node.file_slots) > 0:
+        node.file_slots[0].path = prefix_without_extension
+        print(f"[MRQ v13] File Output legacy slot: path={prefix_without_extension!r} input_index=0", flush=True)
+        return 0
+
+    if hasattr(node, "file_name"):
+        try:
+            node.file_name = prefix_without_extension
+        except Exception as exc:
+            print(f"[MRQ v13] warning: could not set File Output file_name={prefix_without_extension!r}: {exc}", flush=True)
+
+    items = getattr(node, "file_output_items", None)
+    if items is not None:
+        # Delete Blender-created default blank items. In your v12 log the input
+        # list was [''], and Blender wrote no pass files. A fresh explicit item
+        # avoids that half-configured state.
+        try:
+            while len(items) > 0:
+                items.remove(items[0])
+        except Exception as exc:
+            print(f"[MRQ v13] warning: could not clear default file_output_items: {exc}", flush=True)
+
+        item_name = "Z" if color_mode == "BW" else "Image"
+        socket_candidates = (
+            ("VALUE", "NodeSocketFloat", "RGBA", "NodeSocketColor") if color_mode == "BW"
+            else ("RGBA", "NodeSocketColor", "VALUE", "NodeSocketFloat")
+        )
+        last_exc = None
+        for socket_type in socket_candidates:
+            try:
+                items.new(socket_type, item_name)
+                break
+            except Exception as exc:
+                last_exc = exc
+        if len(node.inputs) == 0:
+            raise RuntimeError(f"Could not create Blender 5 File Output item for {prefix_without_extension!r}: {last_exc}")
+        try:
+            if len(items) > 0:
+                items[0].name = item_name
+                if hasattr(items[0], "file_name"):
+                    items[0].file_name = item_name
+        except Exception:
+            pass
+        try:
+            node.active_item_index = 0
+        except Exception:
+            pass
+        try:
+            input_names = [inp.name for inp in node.inputs]
+        except Exception:
+            input_names = []
+        try:
+            item_names = [it.name for it in items]
+        except Exception:
+            item_names = []
+        print(f"[MRQ v13] File Output recreated item/input0: file_name={getattr(node, 'file_name', None)!r} color_mode={color_mode!r} inputs={input_names!r} items={item_names!r}", flush=True)
+        return 0
+
+    return 0
+
+def _socket_by_names(sockets, names):
+    wanted = {n.lower() for n in names}
+    for sock in sockets:
+        if sock.name.lower() in wanted:
+            return sock
+    for sock in sockets:
+        low = sock.name.lower()
+        if any(w in low for w in wanted):
+            return sock
+    return sockets[0] if len(sockets) else None
+
+
+def _new_separate_rgba_node(tree):
+    """Return (node, r_socket, g_socket). Works on Blender 4 and 5."""
+    # Blender 5 removed SepRGBA; use Separate Color.
+    for node_type in ("CompositorNodeSeparateColor", "CompositorNodeSepRGBA"):
+        try:
+            node = tree.nodes.new(type=node_type)
+            node.name = TEMP_NODE_PREFIX + "SeparateVector"
+            node.label = TEMP_NODE_PREFIX + "SeparateVector"
+            try:
+                if hasattr(node, "mode"):
+                    node.mode = "RGB"
+            except Exception:
+                pass
+            r = _socket_by_names(node.outputs, ["Red", "R"])
+            g = _socket_by_names(node.outputs, ["Green", "G"])
+            if r is not None and g is not None:
+                return node, r, g
+        except Exception:
+            continue
+    raise RuntimeError("No Separate RGBA/Color compositor node available")
+
+
+def _new_combine_rgba_node(tree):
+    """Return (node, r_input, g_input, b_input, a_input, image_output). Works on Blender 4 and 5."""
+    for node_type in ("CompositorNodeCombineColor", "CompositorNodeCombRGBA"):
+        try:
+            node = tree.nodes.new(type=node_type)
+            node.name = TEMP_NODE_PREFIX + "CombineMVDepth"
+            node.label = TEMP_NODE_PREFIX + "CombineMVDepth"
+            try:
+                if hasattr(node, "mode"):
+                    node.mode = "RGB"
+            except Exception:
+                pass
+            r = _socket_by_names(node.inputs, ["Red", "R"])
+            g = _socket_by_names(node.inputs, ["Green", "G"])
+            b = _socket_by_names(node.inputs, ["Blue", "B"])
+            a = _socket_by_names(node.inputs, ["Alpha", "A"])
+            out = _socket_by_names(node.outputs, ["Image", "RGBA", "Color"])
+            if r is not None and g is not None and b is not None and out is not None:
+                return node, r, g, b, a, out
+        except Exception:
+            continue
+    raise RuntimeError("No Combine RGBA/Color compositor node available")
+
+def _delete_stale_pass_files(frame_dir: str, stem: str, suffix: str) -> None:
+    import glob
+    exact = os.path.join(frame_dir, f"{stem}{suffix}.exr")
+    for f in glob.glob(os.path.join(frame_dir, f"{stem}{suffix}*.exr")) + [exact]:
+        try:
+            if os.path.isfile(f):
+                os.remove(f)
+        except Exception:
+            pass
+
+
+def setup_compositor_pass_outputs(scene: bpy.types.Scene, frame_dir: str, stem: str, args: argparse.Namespace) -> dict:
+    """Create temporary File Output nodes for Depth/Z and Vector.
+
+    Returns a dict with requested exact output paths. Blender's File Output node appends
+    frame numbers, so after rendering we glob and rename to these exact paths.
+    """
+    outputs = {}
+    if args.no_passes:
+        return outputs
+
+    # Enable compositor without changing the scene's Composite/Viewer output.
+    _enable_compositor(scene)
+
+    tree = get_compositor_tree(scene, create=True)
+    if tree is None:
+        print("[MRQ v13] warning: no compositor node tree available; depth/vector passes will not be written", flush=True)
+        return outputs
+    _remove_temp_compositor_nodes(scene)
+
+    rlayers = tree.nodes.new(type="CompositorNodeRLayers")
+    rlayers.name = TEMP_NODE_PREFIX + "RenderLayers"
+    rlayers.label = TEMP_NODE_PREFIX + "RenderLayers"
+    try:
+        rlayers.layer = scene.view_layers[0].name
+    except Exception:
+        pass
+
+    # Blender 5 removed the old Composite output node from compositor node groups.
+    # A compositor group now needs an explicit NodeGroupOutput, and its sockets
+    # must be created on the tree.interface before linking. Without this, the
+    # group can exist but never execute during a background render, so File Output
+    # nodes silently write nothing.
+    try:
+        img_sock = _find_output_socket(rlayers, ["Image", "Combined", "Color"])
+        if img_sock is not None:
+            group_out = tree.nodes.new(type="NodeGroupOutput")
+            group_out.name = TEMP_NODE_PREFIX + "GroupOutputKeepAlive"
+            group_out.label = TEMP_NODE_PREFIX + "GroupOutputKeepAlive"
+            # Blender 5 path: sockets are created at node-tree interface level.
+            if hasattr(tree, "interface") and hasattr(tree.interface, "new_socket"):
+                try:
+                    tree.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+                except Exception:
+                    # Socket may already exist if Blender reused the group datablock.
+                    pass
+            out_sock = _socket_by_names(group_out.inputs, ["Image", "Output", "Color"])
+            if out_sock is not None:
+                tree.links.new(img_sock, out_sock)
+                print("[MRQ v13] compositor keepalive: RenderLayers.Image -> NodeGroupOutput.Image", flush=True)
+            else:
+                print("[MRQ v13] warning: NodeGroupOutput has no usable Image input", flush=True)
+    except Exception as exc:
+        print(f"[MRQ v13] warning: could not create compositor group-output keepalive: {exc}", flush=True)
+
+    if args.debug:
+        try:
+            print("[MRQ v13] Render Layers outputs: " + ", ".join([sock.name for sock in rlayers.outputs]), flush=True)
+        except Exception:
+            pass
+
+    def add_output(socket_names: List[str], suffix: str, color_mode: str) -> None:
+        socket = _find_output_socket(rlayers, socket_names)
+        exact = os.path.join(frame_dir, f"{stem}{suffix}.exr")
+        outputs[suffix.lstrip("_")] = {"exact": exact, "socket": "" if socket is None else socket.name}
+        if socket is None:
+            print(f"[MRQ v13] warning: no compositor socket found for {socket_names}; pass {suffix} will not be written", flush=True)
+            return
+        _delete_stale_pass_files(frame_dir, stem, suffix)
+        out = tree.nodes.new(type="CompositorNodeOutputFile")
+        out.name = TEMP_NODE_PREFIX + suffix
+        out.label = TEMP_NODE_PREFIX + suffix
+        _set_file_output_directory(out, frame_dir)
+        # File Output appends frame number to this prefix. No extension here.
+        input_index = _set_file_output_prefix(out, f"{stem}{suffix}_", color_mode)
+        _set_file_output_format(out, args, color_mode)
+        tree.links.new(socket, out.inputs[input_index])
+        print(f"[MRQ v13] compositor pass {suffix}: socket={socket.name!r} -> {exact}", flush=True)
+
+    # Depth/Z is scalar. Vector pass is generally RGBA-like in Blender; exact channel semantics vary by engine/version.
+    add_output(["Depth", "Z"], "_depth", "BW")
+    add_output(["Vector", "Motion Vector", "MotionVector"], "_vector", "RGBA")
+
+    # Best-effort UE-style packed MVD sidecar: R=Vector.R, G=Vector.G, B=Depth, A=1.
+    # This is intentionally raw Blender vector data; sign/scale still needs calibration against UE.
+    depth_socket = _find_output_socket(rlayers, ["Depth", "Z"])
+    vector_socket = _find_output_socket(rlayers, ["Vector", "Motion Vector", "MotionVector"])
+    exact = os.path.join(frame_dir, f"{stem}_mvdepth.exr")
+    outputs["mvdepth"] = {"exact": exact, "socket": "Vector+Depth" if depth_socket and vector_socket else ""}
+    if depth_socket is not None and vector_socket is not None:
+        try:
+            _delete_stale_pass_files(frame_dir, stem, "_mvdepth")
+            sep, sep_r, sep_g = _new_separate_rgba_node(tree)
+            comb, comb_r, comb_g, comb_b, comb_a, comb_out = _new_combine_rgba_node(tree)
+            out = tree.nodes.new(type="CompositorNodeOutputFile")
+            out.name = TEMP_NODE_PREFIX + "_mvdepth"
+            out.label = TEMP_NODE_PREFIX + "_mvdepth"
+            _set_file_output_directory(out, frame_dir)
+            input_index = _set_file_output_prefix(out, f"{stem}_mvdepth_", "RGBA")
+            _set_file_output_format(out, args, "RGBA")
+            tree.links.new(vector_socket, sep.inputs[0])
+            tree.links.new(sep_r, comb_r)      # R = Vector.R
+            tree.links.new(sep_g, comb_g)      # G = Vector.G
+            tree.links.new(depth_socket, comb_b)  # B = Depth/Z
+            if comb_a is not None:
+                try:
+                    comb_a.default_value = 1.0
+                except Exception:
+                    pass
+            tree.links.new(comb_out, out.inputs[input_index])
+            print(f"[MRQ v13] compositor pass _mvdepth: sockets=({vector_socket.name!r},{depth_socket.name!r}) -> {exact}", flush=True)
+        except Exception as exc:
+            print(f"[MRQ v13] warning: could not create combined _mvdepth output: {exc}", flush=True)
+    else:
+        print("[MRQ v13] warning: cannot create _mvdepth because Depth/Z or Vector socket is missing", flush=True)
+    return outputs
+
+
+def collect_compositor_pass_outputs(frame_dir: str, stem: str, suffix: str, frame: int) -> Tuple[str, bool, int]:
+    import glob
+    exact = os.path.join(frame_dir, f"{stem}{suffix}.exr")
+    candidates = []
+    patterns = [
+        os.path.join(frame_dir, f"{stem}{suffix}.exr"),
+        os.path.join(frame_dir, f"{stem}{suffix}_*.exr"),
+        os.path.join(frame_dir, f"{stem}{suffix}*.exr"),
+        os.path.join(frame_dir, f"{stem}{suffix}_Image*.exr"),
+        os.path.join(frame_dir, f"{stem}{suffix}_Z*.exr"),
+        os.path.join(frame_dir, "**", f"{stem}{suffix}.exr"),
+        os.path.join(frame_dir, "**", f"{stem}{suffix}_*.exr"),
+        os.path.join(frame_dir, "**", f"{stem}{suffix}*.exr"),
+    ]
+    for pat in patterns:
+        candidates.extend(glob.glob(pat, recursive=True))
+    # Prefer newest non-empty file.
+    candidates = [c for c in candidates if os.path.isfile(c) and os.path.getsize(c) > 0]
+    candidates.sort(key=lambda c: os.path.getmtime(c), reverse=True)
+    if candidates:
+        src = candidates[0]
+        if os.path.abspath(src) != os.path.abspath(exact):
+            try:
+                if os.path.exists(exact):
+                    os.remove(exact)
+                shutil.move(src, exact)
+            except Exception:
+                shutil.copy2(src, exact)
+        return exact, os.path.isfile(exact), os.path.getsize(exact) if os.path.isfile(exact) else 0
+    return exact, os.path.isfile(exact), os.path.getsize(exact) if os.path.isfile(exact) else 0
+
+def render_sample(scene: bpy.types.Scene, cam: bpy.types.Object, path: str, frame: int, jx: float, jy: float, args: argparse.Namespace) -> Tuple[bool, int, dict]:
     path = os.path.abspath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     width = int(scene.render.resolution_x * scene.render.resolution_percentage / 100)
@@ -317,23 +746,48 @@ def render_sample(scene: bpy.types.Scene, cam: bpy.types.Object, path: str, fram
         cam.data.shift_x = old_shift_x + dx
         cam.data.shift_y = old_shift_y + dy
         scene.render.filepath = path
-        print(f"[MRQ v4] render frame={frame} sample_path={path} jitter=({jx:+.8f},{jy:+.8f}) cam_shift_delta=({dx:+.10f},{dy:+.10f})", flush=True)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        pass_requests = setup_compositor_pass_outputs(scene, os.path.dirname(path), stem, args)
+        print(f"[MRQ v13] render frame={frame} sample_path={path} jitter=({jx:+.8f},{jy:+.8f}) cam_shift_delta=({dx:+.10f},{dy:+.10f})", flush=True)
+        pass_outputs = {}
         if not args.dry_run:
             bpy.ops.render.render(write_still=True)
             check_or_save_render_result(scene, path, frame)
+            for suffix in ("_depth", "_vector", "_mvdepth"):
+                pth, ok, nbytes = collect_compositor_pass_outputs(os.path.dirname(path), stem, suffix, frame)
+                pass_outputs[suffix.lstrip("_")] = {"path": pth, "exists": ok, "bytes": nbytes}
+                if ok:
+                    print(f"[MRQ v13] wrote pass {suffix}: {pth} bytes={nbytes}", flush=True)
+                elif not args.no_passes:
+                    print(f"[MRQ v13] warning: pass {suffix} was not written for {path}", flush=True)
+                    try:
+                        import glob as _glob
+                        nearby = sorted(_glob.glob(os.path.join(os.path.dirname(path), "*.exr")))[:20]
+                        print(f"[MRQ v13] nearby exr files in frame dir: {nearby}", flush=True)
+                    except Exception:
+                        pass
+        else:
+            for suffix in ("_depth", "_vector", "_mvdepth"):
+                pth = os.path.join(os.path.dirname(path), f"{stem}{suffix}.exr")
+                pass_outputs[suffix.lstrip("_")] = {"path": pth, "exists": False, "bytes": 0}
         exists = os.path.isfile(path)
         size = os.path.getsize(path) if exists else 0
-        return exists, size
+        return exists, size, pass_outputs
     finally:
         cam.data.shift_x = old_shift_x
         cam.data.shift_y = old_shift_y
         scene.render.filepath = old_filepath
+        _remove_temp_compositor_nodes(scene)
 
 
 def main() -> None:
     args = parse_args(sys.argv)
     if args.keep_temp:
         args.save_all_subsamples = True
+    if args.only_chosen:
+        args.output_mode = "chosen"
+    elif args.save_all_subsamples and args.output_mode != "both":
+        args.output_mode = "all"
     scene = bpy.context.scene
     configure_scene(scene, args)
     cam = choose_camera(scene, args.camera)
@@ -344,14 +798,20 @@ def main() -> None:
         raise RuntimeError(f"Invalid frame range: start={start}, end={end}")
     if args.samples < 1:
         raise RuntimeError("--samples must be >= 1")
+    script_tail = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    if "--samples" not in script_tail and not any(a.startswith("--samples=") for a in script_tail):
+        print("[MRQ v13] warning: --samples was not found after Blender's -- separator; using default samples=64", flush=True)
 
     out_dir = blender_abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
-    print(f"[MRQ v4] VERSION={VERSION}", flush=True)
-    print(f"[MRQ v4] blend={bpy.data.filepath}", flush=True)
-    print(f"[MRQ v4] output_dir={out_dir}", flush=True)
-    print(f"[MRQ v4] engine={scene.render.engine} format={scene.render.image_settings.file_format} camera={cam.name}", flush=True)
-    print(f"[MRQ v4] resolution={scene.render.resolution_x}x{scene.render.resolution_y} frames={start}-{end} samples={args.samples}", flush=True)
+    print(f"[MRQ v13] VERSION={VERSION}", flush=True)
+    print(f"[MRQ v13] parsed_args={vars(args)}", flush=True)
+    print(f"[MRQ v13] raw_argv={sys.argv}", flush=True)
+    print(f"[MRQ v13] blend={bpy.data.filepath}", flush=True)
+    print(f"[MRQ v13] output_dir={out_dir}", flush=True)
+    print(f"[MRQ v13] engine={scene.render.engine} format={scene.render.image_settings.file_format} camera={cam.name}", flush=True)
+    print(f"[MRQ v13] output_mode={args.output_mode}", flush=True)
+    print(f"[MRQ v13] resolution={scene.render.resolution_x}x{scene.render.resolution_y} frames={start}-{end} samples={args.samples}", flush=True)
 
     chosen = choose_subsample(args.samples, args)
     records: List[SampleRecord] = []
@@ -363,16 +823,21 @@ def main() -> None:
         for sample in range(args.samples):
             jx, jy = signed_jitter(sample, args.samples, args.jitter)
             is_chosen = sample == chosen
-            if args.save_all_subsamples:
-                filename = f"sample_{sample:04d}_jx_{jx:+.8f}_jy_{jy:+.8f}.exr"
-            elif is_chosen:
+
+            should_render_sample = args.output_mode in {"all", "both"} or (args.output_mode == "chosen" and is_chosen)
+            if not should_render_sample:
+                continue
+
+            if args.output_mode == "chosen":
                 filename = f"chosen_sample_{sample:04d}_jx_{jx:+.8f}_jy_{jy:+.8f}.exr"
             else:
-                # Render non-chosen to a temp file only if future accumulation needs it.
-                # In this driver-only version we skip non-chosen unless --save-all-subsamples.
-                continue
+                filename = f"sample_{sample:04d}_jx_{jx:+.8f}_jy_{jy:+.8f}.exr"
+
             path = os.path.join(frame_dir, filename)
-            exists, size = render_sample(scene, cam, path, frame, jx, jy, args)
+            exists, size, pass_outputs = render_sample(scene, cam, path, frame, jx, jy, args)
+            depth_info = pass_outputs.get("depth", {"path": "", "exists": False, "bytes": 0})
+            vector_info = pass_outputs.get("vector", {"path": "", "exists": False, "bytes": 0})
+            mvdepth_info = pass_outputs.get("mvdepth", {"path": "", "exists": False, "bytes": 0})
             width = int(scene.render.resolution_x * scene.render.resolution_percentage / 100)
             height = int(scene.render.resolution_y * scene.render.resolution_percentage / 100)
             records.append(SampleRecord(
@@ -388,7 +853,69 @@ def main() -> None:
                 exists=exists,
                 bytes=size,
                 is_chosen=is_chosen,
+                depth_path=depth_info.get("path", ""),
+                depth_exists=bool(depth_info.get("exists", False)),
+                depth_bytes=int(depth_info.get("bytes", 0)),
+                vector_path=vector_info.get("path", ""),
+                vector_exists=bool(vector_info.get("exists", False)),
+                vector_bytes=int(vector_info.get("bytes", 0)),
+                mvdepth_path=mvdepth_info.get("path", ""),
+                mvdepth_exists=bool(mvdepth_info.get("exists", False)),
+                mvdepth_bytes=int(mvdepth_info.get("bytes", 0)),
             ))
+
+            if args.output_mode == "both" and is_chosen and exists and size > 0:
+                chosen_filename = f"chosen_sample_{sample:04d}_jx_{jx:+.8f}_jy_{jy:+.8f}.exr"
+                chosen_path = os.path.join(frame_dir, chosen_filename)
+                if os.path.abspath(chosen_path) != os.path.abspath(path):
+                    shutil.copy2(path, chosen_path)
+                    chosen_exists = os.path.isfile(chosen_path)
+                    chosen_size = os.path.getsize(chosen_path) if chosen_exists else 0
+                    # Also copy matching pass files for the chosen alias when they exist.
+                    chosen_depth_path = ""
+                    chosen_vector_path = ""
+                    chosen_mvdepth_path = ""
+                    chosen_depth_exists = False
+                    chosen_vector_exists = False
+                    chosen_mvdepth_exists = False
+                    chosen_depth_size = 0
+                    chosen_vector_size = 0
+                    chosen_mvdepth_size = 0
+                    for pass_name in ("depth", "vector", "mvdepth"):
+                        src_info = pass_outputs.get(pass_name, {})
+                        src_pass = src_info.get("path", "")
+                        if src_pass and os.path.isfile(src_pass):
+                            dst_pass = os.path.splitext(chosen_path)[0] + f"_{pass_name}.exr"
+                            shutil.copy2(src_pass, dst_pass)
+                            if pass_name == "depth":
+                                chosen_depth_path = dst_pass; chosen_depth_exists = True; chosen_depth_size = os.path.getsize(dst_pass)
+                            elif pass_name == "vector":
+                                chosen_vector_path = dst_pass; chosen_vector_exists = True; chosen_vector_size = os.path.getsize(dst_pass)
+                            else:
+                                chosen_mvdepth_path = dst_pass; chosen_mvdepth_exists = True; chosen_mvdepth_size = os.path.getsize(dst_pass)
+                    records.append(SampleRecord(
+                        frame=frame,
+                        sample=sample,
+                        current_sub_index=sample,
+                        chosen_sub_index=chosen,
+                        jitter_x_pixels=jx,
+                        jitter_y_pixels=jy,
+                        camera_shift_x_delta=jx / float(width),
+                        camera_shift_y_delta=-jy / float(height),
+                        path=chosen_path,
+                        exists=chosen_exists,
+                        bytes=chosen_size,
+                        is_chosen=True,
+                        depth_path=chosen_depth_path,
+                        depth_exists=chosen_depth_exists,
+                        depth_bytes=chosen_depth_size,
+                        vector_path=chosen_vector_path,
+                        vector_exists=chosen_vector_exists,
+                        vector_bytes=chosen_vector_size,
+                        mvdepth_path=chosen_mvdepth_path,
+                        mvdepth_exists=chosen_mvdepth_exists,
+                        mvdepth_bytes=chosen_mvdepth_size,
+                    ))
 
     manifest = {
         "version": VERSION,
@@ -401,14 +928,17 @@ def main() -> None:
         "samples": args.samples,
         "jitter": args.jitter,
         "chosen_sub_index": chosen,
+        "output_mode": args.output_mode,
+        "passes_enabled": not args.no_passes,
+        "pass_note": "Depth, Vector, and best-effort packed MVDepth (R=Vector.R, G=Vector.G, B=Depth) are written as sidecar EXRs via compositor File Output nodes; vector channel semantics depend on Blender engine/version.",
         "records": [asdict(r) for r in records],
     }
     manifest_path = os.path.join(out_dir, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
-    print(f"[MRQ v4] manifest={manifest_path}", flush=True)
+    print(f"[MRQ v13] manifest={manifest_path}", flush=True)
     produced = [r for r in records if r.exists and r.bytes > 0]
-    print(f"[MRQ v4] done. produced_files={len(produced)}", flush=True)
+    print(f"[MRQ v13] done. produced_files={len(produced)}", flush=True)
     if len(produced) == 0 and not args.dry_run:
         raise RuntimeError("No files produced. See paths printed above and manifest.json.")
 
