@@ -62,7 +62,7 @@ try:
 except Exception as exc:  # Blender bundles numpy; this should not happen.
     raise RuntimeError("numpy is required (bundled with Blender)") from exc
 
-VERSION = "2026-07-13-v19.2-texcache-persistent"
+VERSION = "2026-07-13-v19.3-point-filter"
 TEMP_NODE_PREFIX = "__MRQ_TEMP_PASS__"
 
 # -----------------------------------------------------------------------------
@@ -204,6 +204,19 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--compositor-device", choices=["CPU", "GPU", "keep"], default="CPU",
                    help="Execution device for the compositor. Default CPU (avoids the 'Render size too "
                         "large for GPU' fallback path). 'keep' leaves the scene setting untouched.")
+    # --- Sampling semantics -----------------------------------------------------
+    p.add_argument("--pixel-filter", choices=["point", "keep"], default="point",
+                   help="point (default): shrink the render pixel filter to ~a point (Cycles BOX filter, "
+                        "width 0.01; render.filter_width 0.01 for EEVEE) so every internal render sample "
+                        "lands at the jittered subpixel position. This matches UE MRQ spatial samples "
+                        "with AA off: geometry stays point-sampled (aliased) per subsample while spp only "
+                        "converges shading noise, and the 64-sample accumulation becomes the box-filtered "
+                        "AA ground truth. keep: leave the scene's filter untouched (note: Cycles default "
+                        "is a 1.5px Blackman-Harris, which pre-blurs every subsample).")
+    p.add_argument("--eevee-taa-samples", type=int, default=None,
+                   help="Set EEVEE taa_render_samples for each subsample render. With --pixel-filter point "
+                        "these internal samples all hit the same subpixel position, so higher values "
+                        "converge EEVEE's stochastic shadows/GI without re-anti-aliasing the image.")
     # --- NDC conversion knobs -------------------------------------------------
     p.add_argument("--depth-ndc-mode", choices=["ue_reversed_z", "d3d01", "gl", "raw"], default="ue_reversed_z",
                    help="ue_reversed_z: DeviceZ=near/z (UE reversed-Z, infinite far); d3d01: [0,1] forward Z; gl: [-1,1]; raw: keep linear depth")
@@ -285,6 +298,41 @@ def configure_scene(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
             print(f"[MRQ v19] compositor_device={args.compositor_device}", flush=True)
         except Exception:
             pass
+
+    # Point pixel filter: make each subsample a true point sample at the jitter
+    # position (UE-MRQ semantics), instead of a pre-anti-aliased image.
+    if args.pixel_filter == "point":
+        applied = []
+        if scene.render.engine == "CYCLES" and hasattr(scene, "cycles"):
+            if hasattr(scene.cycles, "pixel_filter_type"):
+                try:
+                    scene.cycles.pixel_filter_type = "BOX"
+                    applied.append("cycles.pixel_filter_type=BOX")
+                except Exception:
+                    pass
+            if hasattr(scene.cycles, "filter_width"):
+                try:
+                    scene.cycles.filter_width = 0.01
+                    applied.append("cycles.filter_width=0.01")
+                except Exception:
+                    pass
+        if hasattr(scene.render, "filter_width"):
+            try:
+                scene.render.filter_width = 0.01
+                applied.append("render.filter_width=0.01")
+            except Exception:
+                pass
+        if applied:
+            print(f"[MRQ v19] point pixel filter: {', '.join(applied)} "
+                  "(use --pixel-filter keep to preserve the scene's filter)", flush=True)
+
+    if args.eevee_taa_samples is not None and hasattr(scene, "eevee"):
+        if hasattr(scene.eevee, "taa_render_samples"):
+            try:
+                scene.eevee.taa_render_samples = max(1, args.eevee_taa_samples)
+                print(f"[MRQ v19] eevee.taa_render_samples={scene.eevee.taa_render_samples}", flush=True)
+            except Exception:
+                pass
 
     if args.resolution_x:
         scene.render.resolution_x = args.resolution_x
