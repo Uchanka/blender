@@ -805,6 +805,16 @@ def render_sample(scene: bpy.types.Scene, cam: bpy.types.Object, path: str, fram
     old_filepath = scene.render.filepath
     old_comp_group = None
     temp_comp_group = None
+    
+    '''
+    for ob in bpy.data.objects:
+        if ob.type in {'MESH'}:# {'MESH', 'CURVES', 'POINTCLOUD'}:
+            ob.hide_render = True
+    for ps in ob.modifiers:
+        if ps.type == 'PARTICLE_SYSTEM':
+            ps.show_render = False
+    '''
+    
     try:
         old_comp_group, temp_comp_group = _begin_isolated_compositor(scene, args)
         dx = jx / float(width)
