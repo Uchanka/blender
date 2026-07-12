@@ -2,6 +2,8 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+#include <fmt/format.h>
+
 #include "BKE_attribute.hh"
 #include "BKE_customdata.hh"
 #include "BKE_mesh.hh"
@@ -11,15 +13,18 @@
 #include "DNA_image_types.h"
 #include "DNA_object_types.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_geom.h"
-#include "BLI_math_vector.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_geom_c.hh"
+#include "BLI_math_vector_c.hh"
 
 #include "BKE_image_wrappers.hh"
 #include "BKE_paint.hh"
 
+#include "PRF_profile.hh"
+
 #include "pbvh_intern.hh"
 #include "pbvh_pixels_copy.hh"
+#include "pbvh_pixels_rasterize.hh"
 #include "pbvh_uv_islands.hh"
 
 namespace blender {
@@ -60,16 +65,28 @@ constexpr bool USE_WATERTIGHT_CHECK = false;
 
 static void extract_barycentric_pixels(UDIMTilePixels &tile_data,
                                        const ImBuf *image_buffer,
-                                       const uv_islands::UVIslandsMask &uv_mask,
+                                       const uv_islands::UVIslandsMask::Tile &mask_tile,
                                        const int uv_island_index,
                                        const int uv_primitive_index,
                                        const float2 uvs[3],
-                                       const float2 tile_offset,
                                        const int minx,
                                        const int miny,
                                        const int maxx,
                                        const int maxy)
 {
+  const float inv_w = 1.0f / image_buffer->x;
+  const float inv_h = 1.0f / image_buffer->y;
+
+  const int mask_resolution_x = mask_tile.mask_resolution.x;
+  const int mask_resolution_y = mask_tile.mask_resolution.y;
+  const float mask_scale_x = mask_resolution_x * inv_w;
+  const float mask_scale_y = mask_resolution_y * inv_h;
+
+  const float2 image_dimensions(image_buffer->x, image_buffer->y);
+  const TriRasterizer rasterizer(
+      uvs[0] * image_dimensions, uvs[1] * image_dimensions, uvs[2] * image_dimensions);
+
+  float3 row_edge_vals = rasterizer.edge_values(minx, miny);
   for (int y = miny; y < maxy; y++) {
     bool start_detected = false;
     PackedPixelRow pixel_row;
@@ -77,23 +94,33 @@ static void extract_barycentric_pixels(UDIMTilePixels &tile_data,
     pixel_row.num_pixels = 0;
     int x;
 
-    for (x = minx; x < maxx; x++) {
-      float2 uv((float(x) + 0.5f) / image_buffer->x, (float(y) + 0.5f) / image_buffer->y);
-      float3 barycentric_weights;
-      barycentric_weights_v2(uvs[0], uvs[1], uvs[2], uv, barycentric_weights);
+    const float fy = float(y) + 0.5f;
+    const int mask_y = std::clamp(int(fy * mask_scale_y), 0, mask_resolution_y - 1);
 
-      const bool is_inside = barycentric_inside_triangle_v2(barycentric_weights);
-      const bool is_masked = uv_mask.is_masked(uv_island_index, uv + tile_offset);
+    float3 edge_vals = row_edge_vals;
+    for (x = minx; x < maxx; x++) {
+      const float fx = float(x) + 0.5f;
+
+      /* The mask UV is always in range, since loop pixels are inside the clamped bounding box. */
+      const int mask_x = std::clamp(int(fx * mask_scale_x), 0, mask_resolution_x - 1);
+      const bool is_masked = mask_tile.is_masked(uv_island_index, mask_x, mask_y);
+      const bool is_inside = rasterizer.inside(edge_vals);
+
       if (!start_detected && is_inside && is_masked) {
         start_detected = true;
         pixel_row.start_image_coordinate = ushort2(x, y);
+        float3 barycentric_weights;
+        const float2 uv(fx * inv_w, fy * inv_h);
+        barycentric_weights_v2(uvs[0], uvs[1], uvs[2], uv, barycentric_weights);
         pixel_row.start_barycentric_coord = float2(barycentric_weights.x, barycentric_weights.y);
       }
       else if (start_detected && (!is_inside || !is_masked)) {
         break;
       }
+      edge_vals += rasterizer.dx_step;
     }
 
+    row_edge_vals += rasterizer.dy_step;
     if (!start_detected) {
       continue;
     }
@@ -105,6 +132,7 @@ static void extract_barycentric_pixels(UDIMTilePixels &tile_data,
 /** Update the geometry primitives of the pbvh. */
 static void update_geom_primitives(Tree &pbvh, const uv_islands::MeshData &mesh_data)
 {
+  PRF_scope(ProfileCategory::Editor);
   PixelData &pbvh_data = data_get(pbvh);
   pbvh_data.vert_tris.reinitialize(mesh_data.corner_tris.size());
   bke::mesh::vert_tris_from_corner_tris(
@@ -146,6 +174,7 @@ static void do_encode_pixels(const uv_islands::MeshData &mesh_data,
                              MeshNode &node,
                              PixelNode &pixel_node)
 {
+  PRF_scope(ProfileCategory::Editor);
   BLI_assert(pixel_node.flags.rebuild ||
              (pixel_node.uv_primitives.tri_indices.is_empty() &&
               pixel_node.uv_primitives.delta_barycentric_coords.is_empty() &&
@@ -166,22 +195,25 @@ static void do_encode_pixels(const uv_islands::MeshData &mesh_data,
     tile_data.tile_number = image_tile.get_tile_number();
     float2 tile_offset = float2(image_tile.get_tile_offset());
 
+    /* Lookup mask tile once per triangle, as each triangle belongs to one UDIM tile. */
+    const uv_islands::UVIslandsMask::Tile *mask_tile = uv_masks.find_tile(tile_offset +
+                                                                          float2(0.5f, 0.5f));
+
     for (const int face : node.faces()) {
       for (const int tri : bke::mesh::face_triangles_range(mesh_data.faces, face)) {
         for (const UVPrimitiveLookup::Entry &entry : uv_prim_lookup.lookup[tri]) {
-          uv_islands::UVBorder uv_border = entry.uv_primitive->extract_border();
           float2 uvs[3] = {
               entry.uv_primitive->get_uv_vertex(mesh_data, 0)->uv - tile_offset,
               entry.uv_primitive->get_uv_vertex(mesh_data, 1)->uv - tile_offset,
               entry.uv_primitive->get_uv_vertex(mesh_data, 2)->uv - tile_offset,
           };
-          const float minv = clamp_f(min_fff(uvs[0].y, uvs[1].y, uvs[2].y), 0.0f, 1.0f);
+          const float minv = clamp_f(std::min({uvs[0].y, uvs[1].y, uvs[2].y}), 0.0f, 1.0f);
           const int miny = floor(minv * image_buffer->y);
-          const float maxv = clamp_f(max_fff(uvs[0].y, uvs[1].y, uvs[2].y), 0.0f, 1.0f);
+          const float maxv = clamp_f(std::max({uvs[0].y, uvs[1].y, uvs[2].y}), 0.0f, 1.0f);
           const int maxy = min_ii(ceil(maxv * image_buffer->y), image_buffer->y);
-          const float minu = clamp_f(min_fff(uvs[0].x, uvs[1].x, uvs[2].x), 0.0f, 1.0f);
+          const float minu = clamp_f(std::min({uvs[0].x, uvs[1].x, uvs[2].x}), 0.0f, 1.0f);
           const int minx = floor(minu * image_buffer->x);
-          const float maxu = clamp_f(max_fff(uvs[0].x, uvs[1].x, uvs[2].x), 0.0f, 1.0f);
+          const float maxu = clamp_f(std::max({uvs[0].x, uvs[1].x, uvs[2].x}), 0.0f, 1.0f);
           const int maxx = min_ii(ceil(maxu * image_buffer->x), image_buffer->x);
 
           const int uv_prim_index = pixel_node.uv_primitives.tri_indices.size();
@@ -190,17 +222,18 @@ static void do_encode_pixels(const uv_islands::MeshData &mesh_data,
               calc_barycentric_delta_x(image_buffer, uvs, minx, miny));
 
           /* Extract the pixels. */
-          extract_barycentric_pixels(tile_data,
-                                     image_buffer,
-                                     uv_masks,
-                                     entry.uv_island_index,
-                                     uv_prim_index,
-                                     uvs,
-                                     tile_offset,
-                                     minx,
-                                     miny,
-                                     maxx,
-                                     maxy);
+          if (mask_tile != nullptr) {
+            extract_barycentric_pixels(tile_data,
+                                       image_buffer,
+                                       *mask_tile,
+                                       entry.uv_island_index,
+                                       uv_prim_index,
+                                       uvs,
+                                       minx,
+                                       miny,
+                                       maxx,
+                                       maxy);
+          }
         }
       }
     }
@@ -292,6 +325,58 @@ static void apply_watertight_check(Tree &pbvh, Image &image, ImageUser &image_us
   BKE_image_partial_update_mark_full_update(&image);
 }
 
+static float3 calc_pixel_position(const Span<float3> vert_positions,
+                                  const Span<int3> vert_tris,
+                                  const int tri_index,
+                                  const float2 &bary_weight)
+{
+  const int3 &verts = vert_tris[tri_index];
+  const float3 weights(bary_weight.x, bary_weight.y, 1.0f - bary_weight.x - bary_weight.y);
+  float3 result;
+  interp_v3_v3v3v3(result,
+                   vert_positions[verts[0]],
+                   vert_positions[verts[1]],
+                   vert_positions[verts[2]],
+                   weights);
+  return result;
+}
+
+static void calc_node_pixel_row_positions(const uv_islands::MeshData &mesh_data,
+                                          const PixelData &pixel_data,
+                                          PixelNode &pixel_node)
+{
+  for (UDIMTilePixels &tile_data : pixel_node.tiles) {
+    BLI_assert(tile_data.pixel_row_positions.is_empty() ||
+               tile_data.pixel_row_positions.size() == tile_data.pixel_rows.size());
+
+    if (tile_data.pixel_row_positions.size() == tile_data.pixel_rows.size()) {
+      continue;
+    }
+
+    tile_data.pixel_row_positions.resize(tile_data.pixel_rows.size());
+
+    for (const int i : tile_data.pixel_rows.index_range()) {
+      PackedPixelRow &pixel_row = tile_data.pixel_rows[i];
+
+      const float3 start = calc_pixel_position(
+          mesh_data.vert_positions,
+          pixel_data.vert_tris,
+          pixel_node.uv_primitives.tri_indices[pixel_row.uv_primitive_index],
+          pixel_row.start_barycentric_coord);
+      const float3 next = calc_pixel_position(
+          mesh_data.vert_positions,
+          pixel_data.vert_tris,
+          pixel_node.uv_primitives.tri_indices[pixel_row.uv_primitive_index],
+          pixel_row.start_barycentric_coord +
+              pixel_node.uv_primitives.delta_barycentric_coords[pixel_row.uv_primitive_index]);
+      const float3 delta = next - start;
+
+      tile_data.pixel_row_positions[i].start = start;
+      tile_data.pixel_row_positions[i].delta = delta;
+    }
+  }
+}
+
 static bool update_pixels(const Depsgraph &depsgraph,
                           const Object &object,
                           Tree &pbvh,
@@ -345,19 +430,22 @@ static bool update_pixels(const Depsgraph &depsgraph,
   MutableSpan<MeshNode> nodes = pbvh.nodes<MeshNode>();
   MutableSpan<PixelNode> pixel_nodes = pbvh.pixels_->nodes;
 
-  nodes_to_update.foreach_index([&](const int i) {
-    do_encode_pixels(
-        mesh_data, uv_masks, uv_primitive_lookup, image, image_user, nodes[i], pixel_nodes[i]);
-  });
+  nodes_to_update.foreach_index(
+      [&](const int i) {
+        do_encode_pixels(
+            mesh_data, uv_masks, uv_primitive_lookup, image, image_user, nodes[i], pixel_nodes[i]);
+      },
+      exec_mode::grain_size(1));
+  const PixelData &pixel_data = data_get(pbvh);
+  nodes_to_update.foreach_index(
+      [&](const int i) { calc_node_pixel_row_positions(mesh_data, pixel_data, pixel_nodes[i]); },
+      exec_mode::grain_size(1));
   if (USE_WATERTIGHT_CHECK) {
     apply_watertight_check(pbvh, image, image_user);
   }
 
   /* Add solution for non-manifold parts of the model. */
   copy_update(pbvh, image, image_user, mesh_data);
-
-  /* Rebuild the undo regions. */
-  nodes_to_update.foreach_index([&](const int i) { pixel_nodes[i].rebuild_undo_regions(); });
 
   /* Clear the UpdatePixels flag. */
   nodes_to_update.foreach_index([&](const int i) { pixel_nodes[i].flags.rebuild = false; });
@@ -366,27 +454,22 @@ static bool update_pixels(const Depsgraph &depsgraph,
 
 // #define DO_PRINT_STATISTICS
 #ifdef DO_PRINT_STATISTICS
-  /* Print some statistics about compression ratio. */
+  /* Print statistics about the pixel row encoding size. */
   {
-    int compressed_data_len = 0;
-    int num_pixels = 0;
-    for (int n = 0; n < pbvh->totnode; n++) {
-      Node *node = &pbvh->nodes[n];
-      if ((node->flag & Node::Leaf) == 0) {
-        continue;
-      }
-      NodeData *node_data = static_cast<NodeData *>(node->pixels.node_data);
-      for (const UDIMTilePixels &tile_data : node_data->tiles) {
-        compressed_data_len += tile_data.encoded_pixels.size() * sizeof(PackedPixelRow);
-        for (const PackedPixelRow &encoded_pixels : tile_data.encoded_pixels) {
-          num_pixels += encoded_pixels.num_pixels;
+    int64_t rows_bytes = 0;
+    int64_t num_pixels = 0;
+    for (const PixelNode &pixel_node : pbvh.pixels_->nodes) {
+      for (const UDIMTilePixels &tile : pixel_node.tiles) {
+        rows_bytes += int64_t(tile.pixel_rows.size()) * sizeof(PackedPixelRow);
+        for (const PackedPixelRow &row : tile.pixel_rows) {
+          num_pixels += row.num_pixels;
         }
       }
     }
-    printf("Encoded %lld pixels in %lld bytes (%f bytes per pixel)\n",
-           num_pixels,
-           compressed_data_len,
-           float(compressed_data_len) / num_pixels);
+    fmt::print("Encoded {} pixels in {} bytes ({} bytes per pixel)\n",
+               num_pixels,
+               rows_bytes,
+               double(rows_bytes) / double(num_pixels));
   }
 #endif
 
@@ -423,6 +506,7 @@ void mark_image_dirty(bke::pbvh::Node & /*node*/,
                       Image &image,
                       Map<image::TileNumber, ImBuf *> &buffers)
 {
+  PRF_scope(ProfileCategory::Editor);
   if (pixel_node.flags.dirty) {
     for (UDIMTilePixels &tile : pixel_node.tiles) {
       std::optional<image::ImageTileWrapper> image_tile = find_image_tile(image, tile.tile_number);
@@ -448,6 +532,7 @@ namespace bke::pbvh {
 
 void build_pixels(const Depsgraph &depsgraph, Object &object, Image &image, ImageUser &image_user)
 {
+  PRF_scope(ProfileCategory::Editor);
   Tree &pbvh = *object::pbvh_get(object);
   pixels::update_pixels(depsgraph, object, pbvh, image, image_user);
 }

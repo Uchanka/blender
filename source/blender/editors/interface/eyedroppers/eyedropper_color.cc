@@ -18,9 +18,9 @@
 #include "DNA_screen_types.h"
 #include "DNA_space_types.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_vector.h"
-#include "BLI_string.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_vector_c.hh"
+#include "BLI_string.hh"
 #include "BLI_string_ref.hh"
 
 #include "BKE_context.hh"
@@ -643,7 +643,7 @@ static wmOperatorStatus eyedropper_modal(bContext *C, wmOperator *op, const wmEv
       status.opmodal(IFACE_("Confirm"), op->type, EYE_MODAL_SAMPLE_CONFIRM);
       status.opmodal(IFACE_("Cancel"), op->type, EYE_MODAL_CANCEL);
 #ifdef __APPLE__
-      status.item(TIP_("Press 'Enter' to sample outside of a Blender window"), ICON_INFO);
+      status.item(TIP_("Press 'Enter' to sample outside of a Blender window"), ICON_STATUS_INFO);
 #endif
     }
 

@@ -53,25 +53,25 @@ void DataBlockComputeContext::print_current_in_line(std::ostream &stream) const
   }
 }
 
-ModifierComputeContext::ModifierComputeContext(const ComputeContext *parent,
-                                               const NodesModifierData &nmd)
-    : ModifierComputeContext(parent, nmd.modifier.persistent_uid)
+GeometryNodesModifierComputeContext::GeometryNodesModifierComputeContext(
+    const ComputeContext *parent, const NodesModifierData &nmd)
+    : GeometryNodesModifierComputeContext(parent, nmd.modifier.persistent_uid)
 {
   nmd_ = &nmd;
 }
 
-ModifierComputeContext::ModifierComputeContext(const ComputeContext *parent,
-                                               const int modifier_uid)
+GeometryNodesModifierComputeContext::GeometryNodesModifierComputeContext(
+    const ComputeContext *parent, const int modifier_uid)
     : ComputeContext(parent), modifier_uid_(std::move(modifier_uid))
 {
 }
 
-ComputeContextHash ModifierComputeContext::compute_hash() const
+ComputeContextHash GeometryNodesModifierComputeContext::compute_hash() const
 {
   return ComputeContextHash::from(parent_, "MODIFIER", modifier_uid_);
 }
 
-void ModifierComputeContext::print_current_in_line(std::ostream &stream) const
+void GeometryNodesModifierComputeContext::print_current_in_line(std::ostream &stream) const
 {
   if (nmd_) {
     stream << "Modifier: " << nmd_->modifier.name;
@@ -211,6 +211,23 @@ bool EvaluateClosureComputeContext::is_recursive() const
   return false;
 }
 
+ClosureToListComputeContext::ClosureToListComputeContext(const ComputeContext *parent,
+                                                         const int32_t node_id,
+                                                         const int list_index)
+    : NodeComputeContext(parent, node_id, nullptr), list_index_(list_index)
+{
+}
+
+ComputeContextHash ClosureToListComputeContext::compute_hash() const
+{
+  return ComputeContextHash::from(parent_, "CLOSURE_TO_LIST", node_id_, list_index_);
+}
+
+void ClosureToListComputeContext::print_current_in_line(std::ostream &stream) const
+{
+  stream << "Closure to List ID: " << node_id_ << ", List Index: " << list_index_;
+}
+
 OperatorComputeContext::OperatorComputeContext() : OperatorComputeContext(nullptr) {}
 
 OperatorComputeContext::OperatorComputeContext(const ComputeContext *parent)
@@ -274,20 +291,21 @@ const DataBlockComputeContext &ComputeContextCache::for_data_block(const Compute
   return this->for_data_block(parent, orig_session_uid, &id);
 }
 
-const ModifierComputeContext &ComputeContextCache::for_modifier(const ComputeContext *parent,
-                                                                const NodesModifierData &nmd)
+const GeometryNodesModifierComputeContext &ComputeContextCache::for_geometry_nodes_modifier(
+    const ComputeContext *parent, const NodesModifierData &nmd)
 {
-  return *modifier_contexts_cache_.lookup_or_add_cb(
+  return *geometry_nodes_modifier_contexts_cache_.lookup_or_add_cb(
       std::pair{parent, nmd.modifier.persistent_uid},
-      [&]() { return &this->for_any_uncached<ModifierComputeContext>(parent, nmd); });
+      [&]() { return &this->for_any_uncached<GeometryNodesModifierComputeContext>(parent, nmd); });
 }
 
-const ModifierComputeContext &ComputeContextCache::for_modifier(const ComputeContext *parent,
-                                                                const int modifier_uid)
+const GeometryNodesModifierComputeContext &ComputeContextCache::for_geometry_nodes_modifier(
+    const ComputeContext *parent, const int modifier_uid)
 {
-  return *modifier_contexts_cache_.lookup_or_add_cb(std::pair{parent, modifier_uid}, [&]() {
-    return &this->for_any_uncached<ModifierComputeContext>(parent, modifier_uid);
-  });
+  return *geometry_nodes_modifier_contexts_cache_.lookup_or_add_cb(
+      std::pair{parent, modifier_uid}, [&]() {
+        return &this->for_any_uncached<GeometryNodesModifierComputeContext>(parent, modifier_uid);
+      });
 }
 
 const OperatorComputeContext &ComputeContextCache::for_operator(const ComputeContext *parent)

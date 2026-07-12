@@ -2,17 +2,19 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+#include <limits>
 #include <string>
 
 #include <fmt/format.h>
 
 #include "BLI_index_range.hh"
-#include "BLI_listbase.h"
+#include "BLI_listbase.hh"
 #include "BLI_math_base.hh"
 #include "BLI_set.hh"
 #include "BLI_string_ref.hh"
 
 #include "BKE_compositor.hh"
+#include "BKE_compute_contexts.hh"
 #include "BKE_context.hh"
 #include "BKE_cryptomatte.hh"
 #include "BKE_node.hh"
@@ -31,9 +33,115 @@
 #include "DNA_view3d_types.h"
 #include "DNA_windowmanager_types.h"
 
+#include "IMB_imbuf.hh"
+
 #include "NOD_dependencies.hh"
 
 namespace blender::bke::compositor {
+
+Cache::~Cache()
+{
+  this->clear_frames();
+}
+
+const ImBuf *Cache::get_frame(const int frame_number, const int view_identifier)
+{
+  std::scoped_lock lock{frames_mutex_};
+  return this->frames_.lookup_try(FrameKey(frame_number, view_identifier)).value_or(nullptr);
+}
+
+void Cache::add_frame(const int frame_number, const int view_identifier, ImBuf *image_buffer)
+{
+  std::scoped_lock lock{frames_mutex_};
+  /* First evict frames if needed to maintain the memory cache limit. In almost all cases, the
+   * while loop will run exactly once, since the images in the cache will almost always have the
+   * same size, so one goes out, one goes in. So we needn't worry about performance. */
+  const int64_t cache_limit = size_t(U.memcachelimit) * 1024 * 1024;
+  const int64_t image_size = IMB_get_size_in_memory(image_buffer);
+  while (!this->frames_.is_empty() && this->size() + image_size > cache_limit) {
+    this->evict_frame(frame_number);
+  }
+
+  this->frames_.add_new(FrameKey(frame_number, view_identifier), image_buffer);
+}
+
+void Cache::clear_frames()
+{
+  std::scoped_lock lock{frames_mutex_};
+  for (ImBuf *image_buffer : this->frames_.values()) {
+    IMB_freeImBuf(image_buffer);
+  }
+  this->frames_.clear();
+}
+
+Vector<IndexRange> Cache::compute_frame_ranges()
+{
+  /* Compute a sorted vector of all cached frames. */
+  VectorSet<int> frame_numbers_set;
+  {
+    std::scoped_lock lock{frames_mutex_};
+    frame_numbers_set.reserve(this->frames_.size());
+    for (const FrameKey &key : this->frames_.keys()) {
+      frame_numbers_set.add(key.frame_number);
+    }
+  }
+  Vector<int> frame_numbers = frame_numbers_set.extract_vector();
+  std::ranges::sort(frame_numbers);
+
+  Vector<IndexRange> frame_ranges;
+  for (const int frame : frame_numbers) {
+    /* We start a new range by appending a singleton range of the current frame, either because
+     * this is the first range or because the last range will not be contiguous with the current
+     * frame. */
+    if (frame_ranges.is_empty() || frame - frame_ranges.last().last() > 1) {
+      frame_ranges.append(IndexRange(frame, 1));
+    }
+    else {
+      /* Otherwise, the frame is contiguous with the last range, so we just grow its size by 1. */
+      frame_ranges.last() = IndexRange(frame_ranges.last().start(),
+                                       frame_ranges.last().size() + 1);
+    }
+  }
+
+  return frame_ranges;
+}
+
+void Cache::evict_frame(const int current_frame_number)
+{
+  if (this->frames_.is_empty()) {
+    return;
+  }
+
+  /* Find the keys with the maximum and minimum frame numbers. */
+  FrameKey minimum_key = FrameKey(std::numeric_limits<int>::max());
+  FrameKey maximum_key = FrameKey(std::numeric_limits<int>::lowest());
+  for (const FrameKey &key : this->frames_.keys()) {
+    if (key.frame_number < minimum_key.frame_number) {
+      minimum_key = key;
+    }
+    if (key.frame_number > maximum_key.frame_number) {
+      maximum_key = key;
+    }
+  }
+
+  /* Prioritize evicting frames that are behind the current frame and are furthest from it. */
+  if (minimum_key.frame_number < current_frame_number) {
+    IMB_freeImBuf(this->frames_.pop(minimum_key));
+    return;
+  }
+
+  /* Otherwise, evict the frame that is after the current frame and is furthest from it. */
+  IMB_freeImBuf(this->frames_.pop(maximum_key));
+}
+
+int64_t Cache::size()
+{
+  int64_t size = 0;
+  for (ImBuf *image_buffer : this->frames_.values()) {
+    size += IMB_get_size_in_memory(image_buffer);
+  }
+  return size;
+}
 
 /* Adds the pass names of the passes used by the given Render Layer node to the given used passes.
  * This essentially adds the pass names of the outputs that are logically linked. */
@@ -309,6 +417,55 @@ void add_depsgraph_relations(Scene &scene, DepsNodeHandle *compositor_output_dep
   if (evaluation_dependencies.time_dependent) {
     DEG_add_time_source_relation(compositor_output_depsgraph_node, "Time Source -> Compositor");
   }
+}
+
+/* Recursively search node groups to find the node group whose instance key matches the given
+ * active node group instance key, and returns it compute context hash. */
+static std::optional<ComputeContextHash> compute_active_compute_context_hash_recursive(
+    const bNodeTree &node_group,
+    const ComputeContext &compute_context,
+    const bNodeInstanceKey instance_key,
+    const bNodeInstanceKey active_node_group_instance_key)
+{
+  /* If this is the active node group, returns it hash.  */
+  if (active_node_group_instance_key == instance_key) {
+    return compute_context.hash();
+  }
+
+  /* Otherwise, we have to check node groups recursively. */
+  node_group.ensure_topology_cache();
+  for (const bNode *group_node : node_group.group_nodes()) {
+    if (!group_node->id || ID_MISSING(group_node->id)) {
+      continue;
+    }
+
+    const bNodeTree &child_node_group = *id_cast<const bNodeTree *>(group_node->id);
+    const bNodeInstanceKey child_instance_key = bke::node_instance_key(
+        instance_key, &node_group, group_node);
+    const bke::GroupNodeComputeContext child_compute_context(
+        &compute_context, group_node->identifier, &group_node->owner_tree());
+    std::optional<ComputeContextHash> hash = compute_active_compute_context_hash_recursive(
+        child_node_group,
+        child_compute_context,
+        child_instance_key,
+        active_node_group_instance_key);
+    if (hash.has_value()) {
+      return hash;
+    }
+  }
+
+  return std::nullopt;
+}
+
+ComputeContextHash compute_active_compute_context_hash(const Scene &scene,
+                                                       const bNodeTree &root_node_group)
+{
+  const bke::DataBlockComputeContext root_compute_context(nullptr, scene.id);
+  return compute_active_compute_context_hash_recursive(root_node_group,
+                                                       root_compute_context,
+                                                       bke::NODE_INSTANCE_KEY_BASE,
+                                                       root_node_group.active_viewer_key)
+      .value_or(root_compute_context.hash());
 }
 
 }  // namespace blender::bke::compositor

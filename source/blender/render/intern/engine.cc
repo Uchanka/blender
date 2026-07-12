@@ -12,10 +12,10 @@
 
 #include "MEM_guardedalloc.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_bits.h"
-#include "BLI_string.h"
-#include "BLI_utildefines.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_bits.hh"
+#include "BLI_string.hh"
+#include "BLI_utildefines.hh"
 
 #include "DNA_layer_types.h"
 #include "DNA_object_types.h"
@@ -519,7 +519,7 @@ void RE_engine_update_progress(RenderEngine *engine, float progress)
 {
   Render *re = engine->re;
 
-  if (re) {
+  if (re && !re->display_shared) {
     CLAMP(progress, 0.0f, 1.0f);
     re->display->progress(progress);
   }
@@ -863,8 +863,10 @@ static bool possibly_using_gpu_compositor(const Render *re)
     return false;
   }
 
+  /* Note a secondary Render instance from a Render Layers node has a null pipeline scene,
+   * but no compositing is performed for it so we can return false. */
   const Scene *scene = re->pipeline_scene_eval;
-  return (scene->compositing_node_group && (scene->r.scemode & R_DOCOMP));
+  return scene && scene->compositing_node_group && (scene->r.scemode & R_DOCOMP);
 }
 
 static void engine_render_view_layer(Render *re,
@@ -905,10 +907,10 @@ static void engine_render_view_layer(Render *re,
        * context initialization. For the non-background renders the GPU context is already
        * initialized for the Blender interface and no workaround is needed.
        *
-       * Technically it is enough to only call WM_init_gpu() here, but it expects to only be called
-       * once, and from here it is not possible to know whether GPU sub-system is initialized or
-       * not. So instead temporarily enable the render context, which will take care of the GPU
-       * context initialization.
+       * Technically it is enough to only call WM_init_gpu_offscreen() here, but it expects
+       * to only be called once, and from here it is not possible to know whether GPU
+       * sub-system is initialized or not. So instead temporarily enable the render context,
+       * which will take care of the GPU context initialization.
        *
        * For demo file and tracking progress of possible fixes on driver side refer to #120007. */
       DRW_render_context_enable(engine->re);
@@ -949,7 +951,7 @@ static void engine_render_view_layer(Render *re,
 
   /* Optionally composite grease pencil over render result.
    * Only do it if the passes are allocated (and the engine will not override the grease pencil
-   * when reading its result from EXR file and writing to the Blender side. */
+   * when reading its result from EXR file and writing to the Blender side). */
   if (engine->has_grease_pencil && use_grease_pencil && re->result->passes_allocated) {
     /* NOTE: External engine might have been requested to free its
      * dependency graph, which is only allowed if there is no grease
@@ -1019,12 +1021,15 @@ bool RE_engine_render(Render *re, bool do_all)
   /* Lock drawing in UI during data phase. */
   re->display->draw_lock();
 
-  if ((type->flag & RE_USE_GPU_CONTEXT) && !GPU_backend_supported()) {
-    /* Clear UI drawing locks. */
-    re->display->draw_unlock();
-    BKE_report(re->reports, RPT_ERROR, "Cannot initialize the GPU");
-    G.is_break = true;
-    return true;
+  if (type->flag & RE_USE_GPU_CONTEXT) {
+    WM_init_gpu_backend();
+    if (!GPU_backend_supported()) {
+      /* Clear UI drawing locks. */
+      re->display->draw_unlock();
+      BKE_report(re->reports, RPT_ERROR, "Cannot initialize the GPU");
+      G.is_break = true;
+      return true;
+    }
   }
 
   /* Create engine. */

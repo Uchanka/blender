@@ -42,9 +42,11 @@ set(SRC
   operators/bmo_planar_faces.cc
   operators/bmo_poke.cc
   operators/bmo_primitive.cc
+  operators/bmo_relax_edge_loops.cc
   operators/bmo_removedoubles.cc
   operators/bmo_rotate_edges.cc
   operators/bmo_smooth_laplacian.cc
+  operators/bmo_space_edge_loops_evenly.cc
   operators/bmo_split_edges.cc
   operators/bmo_subdivide.cc
   operators/bmo_subdivide_edgering.cc

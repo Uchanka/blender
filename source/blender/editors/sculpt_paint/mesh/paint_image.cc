@@ -14,12 +14,12 @@
 
 #include "MEM_guardedalloc.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_color.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_color_c.hh"
 #include "BLI_math_vector.hh"
 #include "BLI_rand.hh"
-#include "BLI_string.h"
-#include "BLI_utildefines.h"
+#include "BLI_string.hh"
+#include "BLI_utildefines.hh"
 
 #include "IMB_imbuf.hh"
 #include "IMB_imbuf_types.hh"
@@ -37,6 +37,7 @@
 #include "BKE_curves.hh"
 #include "BKE_grease_pencil.hh"
 #include "BKE_image.hh"
+#include "BKE_image_gpu.hh"
 #include "BKE_library.hh"
 #include "BKE_main.hh"
 #include "BKE_material.hh"
@@ -116,7 +117,7 @@ void imapaint_region_tiles(
 }
 
 void ED_imapaint_dirty_region(
-    Image *ima, ImBuf *ibuf, ImageUser *iuser, int x, int y, int w, int h, bool find_old)
+    Image *ima, ImBuf *ibuf, ImageUser *iuser, int x, int y, int w, int h)
 {
   int tilex, tiley, tilew, tileh, tx, ty;
   int srcx = 0, srcy = 0;
@@ -137,8 +138,7 @@ void ED_imapaint_dirty_region(
 
   for (ty = tiley; ty <= tileh; ty++) {
     for (tx = tilex; tx <= tilew; tx++) {
-      ED_image_paint_tile_push(
-          undo_tiles, ima, ibuf, iuser, tx, ty, nullptr, nullptr, false, find_old);
+      ED_image_paint_tile_push(undo_tiles, ima, ibuf, iuser, tx, ty, nullptr, nullptr);
     }
   }
 
@@ -727,7 +727,7 @@ void ED_object_texture_paint_mode_enter_ex(Main &bmain,
   BKE_paint_brushes_validate(&bmain, &imapaint.paint);
 
   if (U.glreslimit != 0) {
-    BKE_image_free_all_gputextures(&bmain);
+    BKE_image_free_all_gpu_texture_caches(&bmain);
   }
   BKE_image_paint_set_mipmap(&bmain, false);
 
@@ -762,7 +762,7 @@ void ED_object_texture_paint_mode_exit_ex(Main &bmain, Scene &scene, Object &ob)
   ob.mode &= ~OB_MODE_TEXTURE_PAINT;
 
   if (U.glreslimit != 0) {
-    BKE_image_free_all_gputextures(&bmain);
+    BKE_image_free_all_gpu_texture_caches(&bmain);
   }
   BKE_image_paint_set_mipmap(&bmain, true);
   toggle_paint_cursor(scene, false);

@@ -14,7 +14,7 @@
 
 #include "MEM_guardedalloc.h"
 
-#include "BLI_string.h"
+#include "BLI_string.hh"
 #include "BLI_string_utils.hh"
 
 #include "DNA_anim_types.h"
@@ -25,7 +25,7 @@
 #include "ANIM_keyframing.hh"
 
 #include "BKE_anim_data.hh"
-#include "BKE_animsys.h"
+#include "BKE_animsys.hh"
 #include "BKE_context.hh"
 #include "BKE_fcurve.hh"
 #include "BKE_global.hh"
@@ -54,7 +54,7 @@
 
 #include "CLG_log.h"
 
-/* Doc-string Literal types. */
+/* Docstring Literal types. */
 
 #define PYDOC_INSERTKEY_OPTIONS_LITERAL \
   "Literal[" \

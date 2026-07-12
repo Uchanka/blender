@@ -86,6 +86,7 @@ struct VKGraphicsInfo {
     Vector<shader::SpecializationConstant::Value> specialization_constants;
     bool has_depth;
     bool has_stencil;
+    uint32_t max_input_attachment_index = 0;
 
     bool operator==(const Shaders &other) const
     {
@@ -95,7 +96,8 @@ struct VKGraphicsInfo {
              vk_pipeline_layout == other.vk_pipeline_layout && vk_topology == other.vk_topology &&
              viewport_count == other.viewport_count && state == other.state &&
              specialization_constants == other.specialization_constants &&
-             has_depth == other.has_depth && has_stencil == other.has_stencil;
+             has_depth == other.has_depth && has_stencil == other.has_stencil &&
+             max_input_attachment_index == other.max_input_attachment_index;
     }
 
     uint64_t hash() const
@@ -109,6 +111,7 @@ struct VKGraphicsInfo {
       hash = hash * 33 ^ state.data;
       hash = hash * 33 ^ specialization_constants.hash();
       hash = hash * 33 ^ (uint64_t(has_depth) << 1 | uint64_t(has_stencil));
+      hash = hash * 33 ^ uint64_t(max_input_attachment_index);
       return hash;
     }
 
@@ -123,7 +126,7 @@ struct VKGraphicsInfo {
     /* Dynamic rendering */
     VkFormat depth_attachment_format;
     VkFormat stencil_attachment_format;
-    Vector<VkFormat> color_attachment_formats;
+    Vector<VkFormat, GPU_FB_MAX_COLOR_ATTACHMENT> color_attachment_formats;
 
     bool operator==(const FragmentOut &other) const
     {
@@ -194,7 +197,7 @@ template<typename PipelineInfo> class VKPipelineMap {
    * When vk_pipeline_base is a valid pipeline handle, the pipeline base will be used to speed up
    * pipeline creation process.
    *
-   * \param compute_info:     Description of the pipeline to compile.
+   * \param pipeline_info:    Description of the pipeline to compile.
    * \param vk_pipeline_cache: Pipeline cache to use.
    * \param vk_pipeline_base: An already existing pipeline that can be used as a base when
    *                          compiling the pipeline.
@@ -268,11 +271,11 @@ template<typename PipelineInfo> class VKPipelineMap {
    *
    * \note Handle is passed to fix recursive inclusion of vk_device.hh
    */
-  void free_data(VkDevice vk_device)
+  void free_data(VkDevice vk_device, const volk::VolkDeviceTable &functions)
   {
     std::scoped_lock lock(mutex_);
     for (VkPipeline &vk_pipeline : pipelines_.values()) {
-      vkDestroyPipeline(vk_device, vk_pipeline, nullptr);
+      functions.vkDestroyPipeline(vk_device, vk_pipeline, nullptr);
     }
     pipelines_.clear();
   }
@@ -447,7 +450,7 @@ class VKPipelinePool : public NonCopyable {
    * Function is called just before the device is removed. This cannot be done in the destructor as
    * that would be called after the device is removed.
    */
-  void free_data();
+  void free_data(const VKDevice &device);
 
   /**
    * Read the static pipeline cache from cache file.

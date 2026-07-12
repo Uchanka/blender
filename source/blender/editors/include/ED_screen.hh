@@ -17,7 +17,7 @@
 
 #include "WM_types.hh"
 
-#include "BLI_compiler_attrs.h"
+#include "BLI_compiler_attrs.hh"
 
 namespace blender {
 
@@ -243,6 +243,9 @@ void ED_area_tag_redraw(ScrArea *area);
 void ED_area_tag_redraw_no_rebuild(ScrArea *area);
 void ED_area_tag_redraw_regiontype(ScrArea *area, int regiontype);
 void ED_area_tag_refresh(ScrArea *area);
+void ED_area_hud_region_set_padding_flag(ScrArea *area,
+                                         ARegion *changed_region,
+                                         const bool set_padding = false);
 /**
  * For regions that change the region size in their #ARegionType.layout() callback: Mark the area
  * as having a changed region size, requiring refitting of regions within the area.
@@ -355,7 +358,20 @@ void ED_screen_exit(bContext *C, wmWindow *window, bScreen *screen);
  */
 void ED_screen_animation_timer(
     bContext *C, Scene *scene, ViewLayer *view_layer, int redraws, int sync, int enable);
+/**
+ * Remove the animation timer, same as calling ED_screen_animation_timer(..., enable=0).
+ */
+void ED_screen_animation_timer_remove(wmWindowManager *wm, wmWindow *win);
 void ED_screen_animation_timer_update(bScreen *screen, int redraws);
+/**
+ * Stop the animation in all screens where should_stop_fn(screen) returns true.
+ *
+ * The callback is only called for screens that have an animation timer.
+ */
+void ED_screen_animation_stop(Main *bmain,
+                              wmWindowManager *wm,
+                              FunctionRef<bool(const bScreen &screen)> should_stop_fn);
+
 void ED_screen_restore_temp_type(bContext *C, ScrArea *area);
 ScrArea *ED_screen_full_newspace(bContext *C, ScrArea *area, int type);
 /**
@@ -390,7 +406,6 @@ ScrArea *ED_screen_state_toggle(bContext *C, wmWindow *win, ScrArea *area, eScre
  * as defined by \a display_type.
  *
  * \param title: Title to set for the window, if a window is spawned.
- * \param rect_unscaled: Position & size of the window, if a window is spawned.
  */
 ScrArea *ED_screen_temp_space_open(bContext *C,
                                    const char *title,
@@ -589,6 +604,7 @@ bool ED_operator_region_gizmo_active(bContext *C);
  * Generic for any view2d which uses anim_ops.
  */
 bool ED_operator_animview_active(bContext *C);
+bool ED_operator_region_animview_active(bContext *C);
 bool ED_operator_outliner_active(bContext *C);
 bool ED_operator_region_outliner_active(bContext *C);
 bool ED_operator_outliner_active_no_editobject(bContext *C);
@@ -598,6 +614,7 @@ bool ED_operator_outliner_active_no_editobject(bContext *C);
  * #ED_operator_asset_browsing_active() (asset browsing only).
  */
 bool ED_operator_file_active(bContext *C);
+bool ED_operator_region_file_active(bContext *C);
 /**
  * \note Will only return true if the file space is in file browsing mode, not asset browsing! See
  * #ED_operator_file_active() (file or asset browsing) and
@@ -607,29 +624,41 @@ bool ED_operator_file_browsing_active(bContext *C);
 bool ED_operator_asset_browsing_active(bContext *C);
 bool ED_operator_spreadsheet_active(bContext *C);
 bool ED_operator_action_active(bContext *C);
+bool ED_operator_region_action_active(bContext *C);
 bool ED_operator_buttons_active(bContext *C);
 bool ED_operator_node_active(bContext *C);
 bool ED_operator_node_editable(bContext *C);
 bool ED_operator_graphedit_active(bContext *C);
+bool ED_operator_region_graphedit_active(bContext *C);
 bool ED_operator_sequencer_active(bContext *C);
 bool ED_operator_sequencer_active_editable(bContext *C);
 bool ED_operator_image_active(bContext *C);
 bool ED_operator_nla_active(bContext *C);
+bool ED_operator_region_nla_active(bContext *C);
 bool ED_operator_info_active(bContext *C);
+bool ED_operator_region_info_active(bContext *C);
 bool ED_operator_console_active(bContext *C);
 bool ED_operator_preferences_active(bContext *C);
 
 /** Only check there is an active object (no visibility check). */
 bool ED_operator_object_active_only(bContext *C);
 bool ED_operator_object_active(bContext *C);
+bool ED_operator_object_active_objectmode(bContext *C);
 bool ED_operator_object_active_editable_ex(bContext *C, const Object *ob);
 bool ED_operator_object_active_editable(bContext *C);
+
+/** Use in cases where it's essential the object is the active object in the current view layer. */
+bool ED_operator_object_active_only_from_view_layer(bContext *C);
+bool ED_operator_object_active_from_view_layer(bContext *C);
+
 /**
  * Object must be editable and fully local (i.e. not an override).
  */
 bool ED_operator_object_active_local_editable_ex(bContext *C, const Object *ob);
 bool ED_operator_object_active_local_editable(bContext *C);
 bool ED_operator_object_active_editable_mesh(bContext *C);
+bool ED_operator_object_active_editable_obdata_from_view_layer_ex(bContext *C, short obtype);
+bool ED_operator_object_active_editable_mesh_from_view_layer(bContext *C);
 bool ED_operator_object_active_editable_font(bContext *C);
 bool ED_operator_editable_mesh(bContext *C);
 bool ED_operator_editmesh(bContext *C);

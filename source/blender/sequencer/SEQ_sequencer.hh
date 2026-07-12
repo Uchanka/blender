@@ -157,7 +157,7 @@ MetaStack *meta_stack_active_get(const Editing *ed);
 /**
  * Open Meta strip content for editing.
  *
- * \param ed: sequence editor data
+ * \param scene: Scene containing the sequence editor data.
  * \param dst: meta strip or NULL for top level view
  */
 void meta_stack_set(const Scene *scene, Strip *dst);
@@ -237,6 +237,13 @@ Map<const Scene *, VectorSet<Strip *>> &lookup_strips_by_scene_map_get(Editing *
  * \return Span of strips
  */
 Span<Strip *> lookup_strips_by_compositor_node_group(Editing *ed, const bNodeTree *key);
+
+/**
+ * Find effect strips, that use strip `key` as one of inputs.
+ * If lookup hash doesn't exist, it will be created. If hash is tagged as invalid, it will be
+ * rebuilt.
+ */
+Span<Strip *> lookup_effects_by_strip(Editing *ed, const Strip *key);
 
 /**
  * Find which meta strip the given timeline channel belongs to. Returns nullptr if it is a global

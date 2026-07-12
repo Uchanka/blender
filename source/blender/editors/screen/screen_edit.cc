@@ -16,10 +16,10 @@
 #include "DNA_scene_types.h"
 #include "DNA_userdef_types.h"
 
-#include "BLI_listbase.h"
-#include "BLI_rect.h"
-#include "BLI_string_utf8.h"
-#include "BLI_utildefines.h"
+#include "BLI_listbase.hh"
+#include "BLI_rect.hh"
+#include "BLI_string_utf8.hh"
+#include "BLI_utildefines.hh"
 
 #include "BKE_context.hh"
 #include "BKE_global.hh"
@@ -452,6 +452,7 @@ static bool screen_area_join_aligned(
   }
 
   screen_delarea(C, screen, sa2);
+  BKE_screen_remove_double_scrverts(screen);
   /* Update preview thumbnail */
   BKE_icon_changed(screen->id.icon_id);
 
@@ -603,7 +604,7 @@ void screen_area_spacelink_add(const Scene *scene, ScrArea *area, eSpace_Type sp
   area->regionbase = slink->regionbase;
 
   BLI_addhead(&area->spacedata, slink);
-  BLI_listbase_clear(&slink->regionbase);
+  slink->regionbase.clear_no_delete();
 }
 
 /* ****************** EXPORTED API TO OTHER MODULES *************************** */
@@ -951,12 +952,7 @@ void ED_screen_exit(bContext *C, wmWindow *window, bScreen *screen)
   CTX_wm_window_set(C, window);
 
   if (screen->animtimer) {
-    WM_event_timer_remove(wm, window, screen->animtimer);
-
-    Depsgraph *depsgraph = CTX_data_depsgraph_pointer(C);
-    Scene *scene = WM_window_get_active_scene(prevwin);
-    Scene *scene_eval = DEG_get_evaluated(depsgraph, scene);
-    BKE_sound_stop_scene(scene_eval);
+    screen_stop_playback(CTX_data_main(C), wm, window, screen);
   }
   screen->animtimer = nullptr;
   screen->scrubbing = false;
@@ -1925,18 +1921,43 @@ ScrArea *ED_screen_temp_space_open(
   return nullptr;
 }
 
+void ED_screen_animation_stop(Main *bmain,
+                              wmWindowManager *wm,
+                              FunctionRef<bool(const bScreen &screen)> should_stop_fn)
+{
+  /* Cannot use ED_window_animation_playing_no_scrub() here, because that only returns the window,
+   * and we need the screen too. */
+  for (wmWindow &win : wm->windows) {
+    bScreen *screen = WM_window_get_active_screen(&win);
+    if (!screen || !screen->animtimer) {
+      continue;
+    }
+    if (!should_stop_fn(*screen)) {
+      continue;
+    }
+
+    screen_stop_playback(bmain, wm, &win, screen);
+  }
+}
+
+void ED_screen_animation_timer_remove(wmWindowManager *wm, wmWindow *win)
+{
+  bScreen *stopscreen = ED_screen_animation_playing(wm);
+  if (!stopscreen) {
+    return;
+  }
+  WM_event_timer_remove(wm, win, stopscreen->animtimer);
+  stopscreen->animtimer = nullptr;
+}
+
 void ED_screen_animation_timer(
     bContext *C, Scene *scene, ViewLayer *view_layer, int redraws, int sync, int enable)
 {
   bScreen *screen = CTX_wm_screen(C);
   wmWindowManager *wm = CTX_wm_manager(C);
   wmWindow *win = CTX_wm_window(C);
-  bScreen *stopscreen = ED_screen_animation_playing(wm);
 
-  if (stopscreen) {
-    WM_event_timer_remove(wm, win, stopscreen->animtimer);
-    stopscreen->animtimer = nullptr;
-  }
+  ED_screen_animation_timer_remove(wm, win);
 
   if (enable) {
     ScreenAnimData *sad = MEM_new_zeroed<ScreenAnimData>("ScreenAnimData");

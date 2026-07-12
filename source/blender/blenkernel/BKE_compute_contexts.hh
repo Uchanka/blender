@@ -61,16 +61,16 @@ class DataBlockComputeContext : public ComputeContext {
   void print_current_in_line(std::ostream &stream) const override;
 };
 
-class ModifierComputeContext : public ComputeContext {
+class GeometryNodesModifierComputeContext : public ComputeContext {
  private:
   /** #ModifierData.persistent_uid. */
   int modifier_uid_;
-  /** The modifier data that this context is for. This may be null. */
+  /** The geometry nodes modifier data that this context is for. This may be null. */
   const NodesModifierData *nmd_ = nullptr;
 
  public:
-  ModifierComputeContext(const ComputeContext *parent, const NodesModifierData &nmd);
-  ModifierComputeContext(const ComputeContext *parent, int modifier_uid);
+  GeometryNodesModifierComputeContext(const ComputeContext *parent, const NodesModifierData &nmd);
+  GeometryNodesModifierComputeContext(const ComputeContext *parent, int modifier_uid);
 
   int modifier_uid() const
   {
@@ -212,6 +212,19 @@ class EvaluateClosureComputeContext : public NodeComputeContext {
    * used when the #ClosureSourceLocation is available.
    */
   bool is_recursive() const;
+};
+
+class ClosureToListComputeContext : public NodeComputeContext {
+ private:
+  int32_t node_id_;
+  int list_index_;
+
+ public:
+  ClosureToListComputeContext(const ComputeContext *parent, int32_t node_id, int list_index);
+
+ private:
+  ComputeContextHash compute_hash() const override;
+  void print_current_in_line(std::ostream &stream) const override;
 };
 
 class OperatorComputeContext : public ComputeContext {

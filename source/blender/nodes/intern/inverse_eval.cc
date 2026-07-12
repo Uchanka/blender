@@ -24,7 +24,7 @@
 #include "BLI_map.hh"
 #include "BLI_math_euler.hh"
 #include "BLI_set.hh"
-#include "BLI_string.h"
+#include "BLI_string.hh"
 
 #include "DEG_depsgraph.hh"
 
@@ -45,8 +45,8 @@ std::optional<SocketValueVariant> convert_single_socket_value(const bNodeSocket 
                                                               const bNodeSocket &new_socket,
                                                               const SocketValueVariant &old_value)
 {
-  const eNodeSocketDatatype old_type = eNodeSocketDatatype(old_socket.type);
-  const eNodeSocketDatatype new_type = eNodeSocketDatatype(new_socket.type);
+  const eNodeSocketDatatype old_type = old_socket.type;
+  const eNodeSocketDatatype new_type = new_socket.type;
   if (old_type == new_type) {
     return old_value;
   }
@@ -783,7 +783,7 @@ bool backpropagate_socket_values(bContext &C,
   }
   /* Set new values for modifier inputs. */
   const bke::DataBlockComputeContext data_block_context{nullptr, object.id};
-  const bke::ModifierComputeContext modifier_context{&data_block_context, nmd};
+  const bke::GeometryNodesModifierComputeContext modifier_context{&data_block_context, nmd};
   for (const bNode *group_input_node : nmd.node_group->group_input_nodes()) {
     for (const bNodeSocket *socket : group_input_node->output_sockets().drop_back(1)) {
       if (const SocketValueVariant *value = value_by_socket.lookup_ptr(

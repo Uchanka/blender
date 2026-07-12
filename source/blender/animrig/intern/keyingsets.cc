@@ -9,13 +9,13 @@
 #include "ANIM_keyframing.hh"
 #include "ANIM_keyingsets.hh"
 
-#include "BKE_animsys.h"
+#include "BKE_animsys.hh"
 #include "BKE_context.hh"
 #include "BKE_main.hh"
 #include "BKE_report.hh"
 
-#include "BLI_listbase.h"
-#include "BLI_string.h"
+#include "BLI_listbase.hh"
+#include "BLI_string.hh"
 
 #include "DEG_depsgraph.hh"
 
@@ -253,7 +253,7 @@ ModifyKeyReturn validate_keyingset(bContext *C, Vector<PointerRNA> *sources, Key
   /* If we don't have any paths now, then this still qualifies as invalid context. */
   /* FIXME: we need some error conditions (to be retrieved from the iterator why this failed!)
    */
-  if (BLI_listbase_is_empty(&keyingset->paths)) {
+  if (keyingset->paths.is_empty()) {
     return ModifyKeyReturn::INVALID_CONTEXT;
   }
 

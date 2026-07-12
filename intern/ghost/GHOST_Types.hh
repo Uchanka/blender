@@ -13,6 +13,7 @@
 #include <string>
 
 #ifdef WITH_VULKAN_BACKEND
+#  define VK_NO_PROTOTYPES
 #  include <vulkan/vulkan_core.h>
 VK_DEFINE_HANDLE(VmaAllocator)
 #endif
@@ -768,7 +769,7 @@ struct GHOST_TEventKeyData {
 };
 
 enum GHOST_TUserSpecialDirTypes {
-  GHOST_kUserSpecialDirDesktop,
+  GHOST_kUserSpecialDirDesktop = 0,
   GHOST_kUserSpecialDirDocuments,
   GHOST_kUserSpecialDirDownloads,
   GHOST_kUserSpecialDirMusic,
@@ -777,6 +778,7 @@ enum GHOST_TUserSpecialDirTypes {
   GHOST_kUserSpecialDirCaches,
   /* Can be extended as needed. */
 };
+#define GHOST_kUserSpecialDirType_Num (GHOST_kUserSpecialDirCaches + 1)
 
 enum GHOST_TWindowDecorationStyleFlags {
   GHOST_kDecorationNone = 0,

@@ -11,7 +11,7 @@
 #include "MEM_guardedalloc.h"
 
 #include "BLI_math_vector_types.hh"
-#include "BLI_rect.h"
+#include "BLI_rect.hh"
 
 #include "BKE_colortools.hh"
 #include "BKE_context.hh"
@@ -177,8 +177,9 @@ static void image_sample_apply(bContext *C, wmOperator *op, const wmEvent *event
     return;
   }
 
-  const float2 offset = ibuf->flags & IB_has_display_window ? float2(ibuf->display_offset) :
-                                                              float2(0.0f);
+  const float2 offset = flag_is_set(ibuf->flags, ImBufFlags::HasDisplayWindow) ?
+                            float2(ibuf->display_offset) :
+                            float2(0.0f);
   int x = int(uv[0] * ibuf->x), y = int(uv[1] * ibuf->y);
 
   if (x >= offset[0] && y >= offset[1] && x < (ibuf->x + offset[0]) && y < (ibuf->y + offset[1])) {
@@ -481,6 +482,8 @@ wmOperatorStatus ED_imbuf_sample_invoke(bContext *C, wmOperator *op, const wmEve
 
   WM_event_add_modal_handler(C, op);
 
+  ED_area_hud_region_set_padding_flag(area, region, true);
+
   return OPERATOR_RUNNING_MODAL;
 }
 
@@ -490,6 +493,14 @@ wmOperatorStatus ED_imbuf_sample_modal(bContext *C, wmOperator *op, const wmEven
     case LEFTMOUSE:
     case RIGHTMOUSE: /* XXX hardcoded */
       if (event->val == KM_RELEASE) {
+        ScrArea *area = CTX_wm_area(C);
+        ARegion *region = CTX_wm_region(C);
+
+        if (SpaceImage *sima = CTX_wm_space_image(C)) {
+          if (!ED_space_image_show_cache(sima)) {
+            ED_area_hud_region_set_padding_flag(area, region);
+          }
+        }
         ED_imbuf_sample_exit(C, op);
         return OPERATOR_CANCELLED;
       }

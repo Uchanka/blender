@@ -16,9 +16,9 @@
 #include "DNA_scene_types.h"
 #include "DNA_screen_types.h"
 
-#include "BLI_listbase.h"
+#include "BLI_listbase.hh"
 #include "BLI_span.hh"
-#include "BLI_utildefines.h"
+#include "BLI_utildefines.hh"
 #include "BLI_vector.hh"
 
 #include "BKE_attribute.hh"
@@ -381,7 +381,7 @@ static void multiresbake_startjob(void *bkv, wmJobWorkerStatus *worker_status)
   MultiresBakeJob *bkj = static_cast<MultiresBakeJob *>(bkv);
   int baked_objects = 0, tot_obj;
 
-  tot_obj = BLI_listbase_count(&bkj->data);
+  tot_obj = bkj->data.count();
 
   if (bkj->bake_clear) { /* clear images */
     for (MultiresBakerJobData &data : bkj->data) {

@@ -14,10 +14,10 @@
 
 #include "MEM_guardedalloc.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_matrix.h"
-#include "BLI_math_rotation.h"
-#include "BLI_math_vector.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_matrix_c.hh"
+#include "BLI_math_rotation_c.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_set.hh"
 
 #include "BKE_action.hh"
@@ -132,7 +132,7 @@ static bKinematicConstraint *has_targetless_ik(bPoseChannel *pchan)
 /**
  * Adds the IK to pchan - returns if added.
  */
-static short pose_grab_with_ik_add(bke::PChanBone pchanbone)
+static short pose_grab_with_ik_add(Object &ob, bke::PChanBone pchanbone)
 {
   bPoseChannel *pchan = pchanbone.pchan;
   bKinematicConstraint *targetless = nullptr;
@@ -213,8 +213,10 @@ static short pose_grab_with_ik_add(bke::PChanBone pchanbone)
     /* Now we count this pchan as being included. */
     data->rootbone++;
 
+    /* We modify the pchan pointer below so we also have to get the corresponding bone pointer. */
+    Bone *bone = pchan->bone_get(ob);
     /* Continue to parent, but only if we're connected to it. */
-    if (pchanbone.bone->flag & BONE_CONNECTED) {
+    if (bone->flag & BONE_CONNECTED) {
       pchan = pchan->parent;
     }
     else {
@@ -231,7 +233,7 @@ static short pose_grab_with_ik_add(bke::PChanBone pchanbone)
 /**
  * Bone is a candidate to get IK, but we don't do it if it has children connected.
  */
-static short pose_grab_with_ik_children(bPose *pose, Bone *bone)
+static short pose_grab_with_ik_children(Object &ob, Bone *bone)
 {
   short wentdeeper = 0, added = 0;
 
@@ -239,13 +241,13 @@ static short pose_grab_with_ik_children(bPose *pose, Bone *bone)
   for (Bone &bonec : bone->childbase) {
     if (bonec.flag & BONE_CONNECTED) {
       wentdeeper = 1;
-      added += pose_grab_with_ik_children(pose, &bonec);
+      added += pose_grab_with_ik_children(ob, &bonec);
     }
   }
   if (wentdeeper == 0) {
-    bPoseChannel *pchan = BKE_pose_channel_find_name(pose, bone->name);
+    bPoseChannel *pchan = BKE_pose_channel_find_name(ob.pose, bone->name);
     if (pchan) {
-      added += pose_grab_with_ik_add({pchan, bone});
+      added += pose_grab_with_ik_add(ob, {pchan, bone});
     }
   }
 
@@ -295,12 +297,12 @@ static short pose_grab_with_ik(Main *bmain, Object *ob)
             }
           }
           if (parent == nullptr) {
-            tot_ik += pose_grab_with_ik_add({&pchan, pchan_bone});
+            tot_ik += pose_grab_with_ik_add(*ob, {&pchan, pchan_bone});
           }
         }
         else {
           /* Rule: go over the children and add IK to the tips. */
-          tot_ik += pose_grab_with_ik_children(ob->pose, pchan_bone);
+          tot_ik += pose_grab_with_ik_children(*ob, pchan_bone);
         }
       }
     }
@@ -1241,7 +1243,11 @@ static void pose_transform_mirror_update(TransInfo *t, TransDataContainer *tc, O
     if (pid) {
       mul_m4_m4m4(pchan_mtx_final, pid->offset_mtx, pchan_mtx_final);
     }
-    BKE_pchan_apply_mat4(pchan, pchan_mtx_final, false);
+    float loc[3], rot[3][3], scale[3];
+    mat4_to_loc_rot_size(loc, rot, scale, pchan_mtx_final);
+    BKE_pchan_protected_location_set(pchan, loc);
+    BKE_pchan_protected_rotation_set(pchan, rot);
+    BKE_pchan_protected_scale_set(pchan, scale);
 
     /* Set flag to let auto key-frame know to key-frame the mirrored bone. */
     pchan_bone->flag |= BONE_TRANSFORM_MIRROR;
@@ -1406,7 +1412,8 @@ static void autokeyframe_pose(bContext *C,
     }
 
     Vector<RNAPath> rna_paths;
-    const StringRef rotation_path = animrig::get_rotation_mode_path(eRotationModes(pchan.rotmode));
+    const StringRefNull rotation_path = animrig::get_rotation_mode_path(
+        eRotationModes(pchan.rotmode));
 
     if (animrig::is_keying_flag(scene, AUTOKEY_FLAG_INSERTNEEDED)) {
       const bool is_connected = pchan_bone->parent != nullptr &&
@@ -1456,8 +1463,6 @@ static void recalcData_pose(TransInfo *t)
     }
   }
   else {
-    Set<Object *> motionpath_updates;
-
     FOREACH_TRANS_DATA_CONTAINER (t, tc) {
       Object *ob = tc->poseobj;
       bPose *pose = ob->pose;
@@ -1489,16 +1494,7 @@ static void recalcData_pose(TransInfo *t)
         autokeyframe_pose(t->context, t->scene, ob, targetless_ik, t->mode, t->data_len_all > 1);
       }
 
-      if (motionpath_need_update_pose(t->scene, ob)) {
-        motionpath_updates.add(ob);
-      }
-
       DEG_id_tag_update(&ob->id, ID_RECALC_GEOMETRY);
-    }
-
-    /* Update motion paths once for all transformed bones in an object. */
-    for (Object *ob : motionpath_updates) {
-      ED_pose_recalculate_paths(t->context, t->scene, ob, ANIMVIZ_CALC_RANGE_CURRENT_FRAME);
     }
   }
 }
@@ -1538,7 +1534,7 @@ void transform_convert_pose_transflags_update(Object *ob, const int mode, const 
   bArmature *arm = id_cast<bArmature *>(ob->data);
 
   for (bPoseChannel &pchan : ob->pose->chanbase) {
-    if (animrig::bone_is_visible(arm, &pchan)) {
+    if (animrig::bone_is_visible(arm, {&pchan, pchan.bone_get(*ob)})) {
       if (pchan.flag & POSE_SELECTED) {
         pchan.runtime.flag |= POSE_RUNTIME_TRANSFORM;
       }
@@ -1756,12 +1752,11 @@ static void special_aftertrans_update__pose(bContext *C, TransInfo *t)
         motionpath_updates.add(ob);
       }
     }
-
-    /* Update motion paths once for all transformed bones in an object. */
-    for (Object *ob : motionpath_updates) {
-      const eAnimvizCalcRange range = canceled ? ANIMVIZ_CALC_RANGE_CURRENT_FRAME :
-                                                 ANIMVIZ_CALC_RANGE_CHANGED;
-      ED_pose_recalculate_paths(C, t->scene, ob, range);
+    if (!canceled) {
+      /* Update motion paths once for all transformed bones in an object. */
+      for (Object *ob : motionpath_updates) {
+        ED_pose_recalculate_paths(C, t->scene, ob, ANIMVIZ_CALC_RANGE_CHANGED);
+      }
     }
   }
 }

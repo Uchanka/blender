@@ -1,9 +1,9 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Blender 5.2.0 Alpha (b'8c7c45ad114e')\n"
+"Project-Id-Version: Blender 5.2.0 LTS Beta (b'b2d38940ccd4')\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-05-11 07:23+0000\n"
+"POT-Creation-Date: 2026-07-06 08:37+0000\n"
 "PO-Revision-Date: 2025-07-23 15:10+0000\n"
 "Last-Translator: Anonymous <noreply@weblate.org>\n"
 "Language-Team: Serbian <https://translate.blender.org/projects/blender-ui/ui/sr/>\n"
@@ -619,12 +619,16 @@ msgid "Active Bone"
 msgstr "Активна кост"
 
 
+msgid "Custom"
+msgstr "Прилагођено"
+
+
 msgid "Description"
 msgstr "Опис"
 
 
-msgid "Custom"
-msgstr "Прилагођено"
+msgid "Link"
+msgstr "Веза"
 
 
 msgid "ID Name"
@@ -1516,6 +1520,10 @@ msgstr "Прецизност"
 
 msgid "Simplify"
 msgstr "Поједностављивање"
+
+
+msgid "Pixel"
+msgstr "Пиксел"
 
 
 msgid "Input Samples"
@@ -4369,10 +4377,6 @@ msgid "Show image files"
 msgstr "Прикажи датотеке слика"
 
 
-msgid "Link"
-msgstr "Веза"
-
-
 msgid "Matrix"
 msgstr "Матрица"
 
@@ -4757,6 +4761,10 @@ msgid "Grid"
 msgstr "Мрежа"
 
 
+msgid "Dynamic"
+msgstr "Динамичко"
+
+
 msgid "Items"
 msgstr "Ставке"
 
@@ -4935,10 +4943,6 @@ msgstr "Локално"
 
 msgid "Global"
 msgstr "Глобално"
-
-
-msgid "Dynamic"
-msgstr "Динамичко"
 
 
 msgid "Add Color"
@@ -6585,10 +6589,6 @@ msgstr "Подешавање честица"
 
 msgid "Degrees"
 msgstr "Степени"
-
-
-msgid "Pixel"
-msgstr "Пиксел"
 
 
 msgid "Angular Velocity"
@@ -8498,42 +8498,6 @@ msgid "Material slot name"
 msgstr "Назив слота материјала"
 
 
-msgid "Snap"
-msgstr "Лепљење"
-
-
-msgid "UV Mapping"
-msgstr "UV Мапирање"
-
-
-msgid "Local View"
-msgstr "Локални поглед"
-
-
-msgid "Navigation"
-msgstr "Навигација"
-
-
-msgid "Align View"
-msgstr "Поравнај поглед"
-
-
-msgid "Select Linked"
-msgstr "Изабери повезано"
-
-
-msgid "Math"
-msgstr "Математика"
-
-
-msgid "Metaball"
-msgstr "Мета лопта"
-
-
-msgid "Light"
-msgstr "Светлост"
-
-
 msgid "Relations"
 msgstr "Односи"
 
@@ -8558,16 +8522,12 @@ msgid "Show/Hide"
 msgstr "Прикажи/сакриј"
 
 
-msgid "Import"
-msgstr "Увоз"
-
-
 msgid "Hooks"
 msgstr "Удице"
 
 
-msgid "UV"
-msgstr "UV"
+msgid "Math"
+msgstr "Математика"
 
 
 msgid "Clear Transform"
@@ -8606,12 +8566,56 @@ msgid "Merge"
 msgstr "Сједини"
 
 
+msgid "Import"
+msgstr "Увоз"
+
+
 msgid "Special Characters"
 msgstr "Специјални знаци"
 
 
+msgid "Metaball"
+msgstr "Мета лопта"
+
+
+msgid "UV"
+msgstr "UV"
+
+
 msgid "Bone Roll"
 msgstr "Ролна костију"
+
+
+msgid "Snap"
+msgstr "Лепљење"
+
+
+msgid "Mirror"
+msgstr "Огледало"
+
+
+msgid "UV Mapping"
+msgstr "UV Мапирање"
+
+
+msgid "Local View"
+msgstr "Локални поглед"
+
+
+msgid "Linked"
+msgstr "Повезано"
+
+
+msgid "Navigation"
+msgstr "Навигација"
+
+
+msgid "Align View"
+msgstr "Поравнај поглед"
+
+
+msgid "Select Linked"
+msgstr "Изабери повезано"
 
 
 msgid "Keying"
@@ -8622,8 +8626,8 @@ msgid "Tracking"
 msgstr "Праћење"
 
 
-msgid "Mirror"
-msgstr "Огледало"
+msgid "Light"
+msgstr "Светлост"
 
 
 msgid "Basic"
@@ -10158,10 +10162,6 @@ msgid "Lines"
 msgstr "Линије"
 
 
-msgid "Timecode"
-msgstr "Време"
-
-
 msgid "Average error of reconstruction"
 msgstr "Просечна грешка реконструкције"
 
@@ -11098,10 +11098,6 @@ msgid "Hide Value"
 msgstr "Сакриј вредност"
 
 
-msgid "Linked"
-msgstr "Повезано"
-
-
 msgid "Is Output"
 msgstr "јесте излаз"
 
@@ -11986,6 +11982,10 @@ msgid "Add Bone"
 msgstr "Додај кост"
 
 
+msgid "Axes"
+msgstr "Осе"
+
+
 msgid "Name of the newly created bone"
 msgstr "Име новоформиране кости"
 
@@ -12035,6 +12035,10 @@ msgstr "Дуплирај изабрану кост/и"
 
 msgid "Move"
 msgstr "Помери"
+
+
+msgid "Search"
+msgstr "Претрага"
 
 
 msgctxt "Operator"
@@ -13838,6 +13842,11 @@ msgstr "Скочи на претходни/наредни кључни када�
 
 msgid "Next Keyframe"
 msgstr "Следећи кључни кадар"
+
+
+msgctxt "Operator"
+msgid "Local View"
+msgstr "Локални поглед"
 
 
 msgctxt "Operator"
@@ -18505,11 +18514,6 @@ msgid "Interactively fly around the scene"
 msgstr "Интерактиван лет кроз сцену"
 
 
-msgctxt "Operator"
-msgid "Local View"
-msgstr "Локални поглед"
-
-
 msgid "Move the view"
 msgstr "Помери поглед"
 
@@ -19062,12 +19066,12 @@ msgid "Restrict"
 msgstr "Ограничи"
 
 
-msgid "Transform Orientations"
-msgstr "Трансформација оријентација"
-
-
 msgid "Motion Tracking"
 msgstr "Праћење покрета"
+
+
+msgid "Transform Orientations"
+msgstr "Трансформација оријентација"
 
 
 msgid "Bone Constraints"
@@ -19292,10 +19296,6 @@ msgstr "Простор теме"
 
 msgid "Shaded"
 msgstr "Сенчено"
-
-
-msgid "Styles"
-msgstr "Стилови"
 
 
 msgid "User Interface"
@@ -19755,6 +19755,10 @@ msgstr "Стандардна акција за средњи тастер миш�
 
 msgid "System & OpenGL"
 msgstr "Систем и OpenGL"
+
+
+msgid "Styles"
+msgstr "Стилови"
 
 
 msgid "View & Controls"
@@ -22331,8 +22335,8 @@ msgid "Operator Properties"
 msgstr "Особине оператора"
 
 
-msgid "Search"
-msgstr "Претрага"
+msgid "Cancel"
+msgstr "Одустани"
 
 
 msgctxt "WindowManager"
@@ -22564,6 +22568,11 @@ msgid "Object Index"
 msgstr "Индекс објекта"
 
 
+msgctxt "Operator"
+msgid "Clear"
+msgstr "Очисти"
+
+
 msgid "No output node"
 msgstr "Без излазног чвора"
 
@@ -22712,10 +22721,6 @@ msgid "Shapes"
 msgstr "Облици"
 
 
-msgid "Axes"
-msgstr "Осе"
-
-
 msgctxt "Operator"
 msgid "Add Image"
 msgstr "Додај слику"
@@ -22789,11 +22794,6 @@ msgstr "Родитељ:"
 
 msgid "Transform:"
 msgstr "Трансформација:"
-
-
-msgctxt "Operator"
-msgid "Clear"
-msgstr "Очисти"
 
 
 msgid "Date"
@@ -23832,6 +23832,11 @@ msgid "Key %d"
 msgstr "Кључ %d"
 
 
+msgctxt "Key"
+msgid "Key"
+msgstr "Кључ"
+
+
 msgid "MaskLayer"
 msgstr "Слој маске"
 
@@ -23915,10 +23920,6 @@ msgstr "Без активне збирке кључева"
 
 msgid "Cannot remove built in keying set"
 msgstr "Не могу да уклоним уграђену збирку кључева"
-
-
-msgid "Cancel"
-msgstr "Одустани"
 
 
 msgid "No keyframes to slide between"
@@ -25020,11 +25021,6 @@ msgstr "Модификатор вредности F-криве"
 
 msgid "Image not packed"
 msgstr "Назив слике"
-
-
-msgctxt "Key"
-msgid "Key"
-msgstr "Кључ"
 
 
 msgid "unsupported font format"

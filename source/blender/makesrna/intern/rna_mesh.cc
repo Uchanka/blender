@@ -107,10 +107,10 @@ static const EnumPropertyItem rna_enum_mesh_remesh_mode_items[] = {
 #  include "DNA_scene_types.h"
 #  include "DNA_world_types.h"
 
-#  include "BLI_math_geom.h"
-#  include "BLI_math_vector.h"
-#  include "BLI_string.h"
-#  include "BLI_string_utf8.h"
+#  include "BLI_math_geom_c.hh"
+#  include "BLI_math_vector_c.hh"
+#  include "BLI_string.hh"
+#  include "BLI_string_utf8.hh"
 
 #  include "BKE_anonymous_attribute_id.hh"
 #  include "BKE_attribute.hh"
@@ -1577,7 +1577,7 @@ static std::optional<std::string> rna_LoopCustomData_data_path(const PointerRNA 
     return std::nullopt;
   }
   return fmt::format(
-      "{}[\"{}\"].data[{}]", collection, BLI_str_escape(lookup->name.c_str()), lookup->elem_index);
+      "{}[\"{}\"].data[{}]", collection, BLI_str_escape(lookup->name), lookup->elem_index);
 }
 
 static void rna_Mesh_vertices_begin(CollectionPropertyIterator *iter, PointerRNA *ptr)
@@ -1834,8 +1834,7 @@ static void rna_MeshUVLoop_uv_set(PointerRNA *ptr, const float *value)
 
 static std::optional<std::string> rna_MeshLoopColorLayer_path(const PointerRNA *ptr)
 {
-  return fmt::format("vertex_colors[\"{}\"]",
-                     BLI_str_escape(rna_Attribute_name_get(*ptr).c_str()));
+  return fmt::format("vertex_colors[\"{}\"]", BLI_str_escape(rna_Attribute_name_get(*ptr)));
 }
 
 static std::optional<std::string> rna_MeshColor_path(const PointerRNA *ptr)

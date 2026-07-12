@@ -19,6 +19,10 @@ namespace ed::outliner {
 class TreeElementGPencilLayer final : public AbstractTreeElement {
  public:
   TreeElementGPencilLayer(TreeElement &legacy_te, bGPDlayer &gplayer);
+  std::optional<BIFIconID> get_icon() const override
+  {
+    return ICON_OUTLINER_DATA_GP_LAYER;
+  }
 };
 
 }  // namespace ed::outliner

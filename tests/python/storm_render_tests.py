@@ -36,6 +36,12 @@ BLOCKLIST_HYDRA = [
     "overlapping_octrees.blend",
     # No number of sample support, so will not converge to gray as expected
     "white_noise_256spp.blend",
+    # Render is incorrect
+    "principled_bsdf_thin_glass.blend",
+    # Custom OSL camera not supported.
+    "osl_camera_.*.blend",
+    # The result doesn't match storm-usd
+    "many_lights.blend",
 ]
 
 BLOCKLIST_USD = [
@@ -50,6 +56,10 @@ BLOCKLIST_USD = [
     "overlapping_octrees.blend",
     # No number of sample support, so will not converge to gray as expected
     "white_noise_256spp.blend",
+    # Render is incorrect
+    "principled_bsdf_thin_glass.blend",
+    # Custom OSL camera not supported.
+    "osl_camera_.*.blend",
 ]
 
 # Metal support in Storm is no as good as OpenGL, though this needs to be
@@ -63,6 +73,7 @@ BLOCKLIST_METAL = [
     "transparent_shadow.blend",
     "transparent_shadow_hair.blend",
     "transparent_shadow_hair_blur.blend",
+    "transparent_shadow_hair_colored.blend",
     "shadow_all_max_bounces.blend",
     "underwater_caustics.blend",
     "shadow_link_transparency.blend",
@@ -83,6 +94,7 @@ BLOCKLIST_METAL = [
 # AMD seems to have similar limitations as Metal for transparency.
 BLOCKLIST_AMD = BLOCKLIST_METAL + [
     "volume_tricubic_interpolation.blend",
+    "holdout.blend",
 ]
 
 # Minor difference in texture coordinate for white noise hash.
@@ -188,6 +200,7 @@ def get_arguments(filepath, output_filepath, gpu_backend):
         "--factory-startup",
         "--enable-autoexec",
         "--debug-memory",
+        "--console-crash-handler",
         "--debug-exit-on-error"]
 
     if gpu_backend:
@@ -232,7 +245,7 @@ def main():
         else:
             blocklist += BLOCKLIST_VULKAN_USD
         if os.getenv("BLENDER_TEST_IGNORE_VENDOR_BLOCKLIST") is None:
-            gpu_vendor = render_report.get_gpu_device_vendor(args.blender)
+            gpu_vendor = render_report.get_gpu_device_vendor(args.blender, args.gpu_backend)
             if gpu_vendor == "NVIDIA":
                 blocklist += BLOCKLIST_VULKAN_NVIDIA
             elif gpu_vendor == "AMD":
@@ -241,7 +254,7 @@ def main():
                 blocklist += BLOCKLIST_VULKAN_INTEL_LINUX
     else:
         if os.getenv("BLENDER_TEST_IGNORE_VENDOR_BLOCKLIST") is None:
-            gpu_vendor = render_report.get_gpu_device_vendor(args.blender)
+            gpu_vendor = render_report.get_gpu_device_vendor(args.blender, args.gpu_backend)
             if gpu_vendor == "AMD":
                 blocklist += BLOCKLIST_AMD
             elif gpu_vendor == "INTEL" and sys.platform == "linux":
@@ -255,7 +268,8 @@ def main():
             variation=args.gpu_backend,
             blocklist=blocklist +
             BLOCKLIST_HYDRA)
-        report.set_reference_dir("storm_hydra_renders")
+        report.set_reference_dir("storm_renders")
+        report.set_reference_override_dir("storm_hydra_renders")
         if args.gpu_backend == "vulkan":
             report.set_compare_engine('storm_hydra', 'opengl')
         else:
@@ -268,7 +282,7 @@ def main():
             variation=args.gpu_backend,
             blocklist=blocklist +
             BLOCKLIST_USD)
-        report.set_reference_dir("storm_usd_renders")
+        report.set_reference_dir("storm_renders")
         report.set_compare_engine('storm_hydra')
         if args.gpu_backend == "metal":
             report.set_compare_engine('storm_hydra', 'metal')

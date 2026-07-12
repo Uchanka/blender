@@ -11,12 +11,12 @@
 
 #include <fmt/format.h>
 
-#include "BLI_alloca.h"
-#include "BLI_dynstr.h"
+#include "BLI_alloca.hh"
+#include "BLI_dynstr.hh"
 #include "BLI_hash.hh"
-#include "BLI_string.h"
+#include "BLI_string.hh"
 #include "BLI_string_ref.hh"
-#include "BLI_utildefines.h"
+#include "BLI_utildefines.hh"
 
 #include "BKE_idprop.hh"
 #include "BKE_idtype.hh"
@@ -77,7 +77,7 @@ static char *rna_path_token(const char **path, char *fixedbuf, int fixedlen)
   }
 
   /* Empty, return. */
-  if (UNLIKELY(len == 0)) {
+  if (len == 0) [[unlikely]] {
     return nullptr;
   }
 
@@ -116,7 +116,7 @@ static char *rna_path_token_in_brackets(const char **path,
   BLI_assert(r_quoted != nullptr);
 
   /* Get data between `[]`, check escaping quotes and back-slashes with #BLI_str_unescape. */
-  if (UNLIKELY(**path != '[')) {
+  if (**path != '[') [[unlikely]] {
     return nullptr;
   }
 
@@ -149,14 +149,14 @@ static char *rna_path_token_in_brackets(const char **path,
     }
   }
 
-  if (UNLIKELY(*p != ']')) {
+  if (*p != ']') [[unlikely]] {
     return nullptr;
   }
 
   /* Support empty strings in quotes, as this is a valid key for an ID-property. */
   if (!quoted) {
     /* Empty, return. */
-    if (UNLIKELY(len == 0)) {
+    if (len == 0) [[unlikely]] {
       return nullptr;
     }
   }
@@ -165,7 +165,7 @@ static char *rna_path_token_in_brackets(const char **path,
   char *buf = (len + 1 < fixedlen) ? fixedbuf :
                                      MEM_new_array_uninitialized<char>(size_t(len) + 1, __func__);
 
-  /* Copy string, taking into account escaped ']' */
+  /* Copy string, taking into account escaped `]`. */
   if (quoted) {
     BLI_str_unescape(buf, *path, len);
     /* +1 to step over the last quote. */
@@ -249,7 +249,9 @@ static bool rna_path_parse_collection_key(const char **path,
     }
   }
   else {
-    if (RNA_property_collection_type_get(ptr, prop, r_nextptr)) {
+    std::optional<PointerRNA> nextptr = RNA_property_collection_type_get(ptr, prop);
+    if (nextptr) {
+      *r_nextptr = *nextptr;
       found = true;
     }
     else {
@@ -741,7 +743,7 @@ const char *RNA_path_array_index_token_find(const char *rna_path, const Property
 
   /* Valid 'array part' of a rna path can only have '[', ']' and digit characters.
    * It may have more than one of those (e.g. `[12][1]`) in case of multi-dimensional arrays. */
-  if (UNLIKELY(rna_path[0] == '\0')) {
+  if (rna_path[0] == '\0') [[unlikely]] {
     return nullptr;
   }
   size_t rna_path_len = strlen(rna_path) - 1;
@@ -1355,6 +1357,37 @@ std::string RNA_path_property_py(const PointerRNA *ptr, PropertyRNA *prop, int i
   }
   const int index_dim = (index == -1) ? 0 : 1;
   return RNA_path_from_ptr_to_property_index(ptr, prop, index_dim, index);
+}
+
+std::pair<std::string, std::string> RNA_generate_keys_for_path_rename(
+    const StringRefNull old_infix,
+    const StringRefNull new_infix,
+    const int old_subscript,
+    const int new_subscript,
+    const bool infix_is_name)
+
+{
+  std::string old_key;
+  std::string new_key;
+
+  if (!old_infix.is_empty() && !new_infix.is_empty()) {
+    if (infix_is_name) {
+      std::string old_name_esc = BLI_str_escape(old_infix);
+      std::string new_name_esc = BLI_str_escape(new_infix);
+      old_key = fmt::format("[\"{}\"]", old_name_esc);
+      new_key = fmt::format("[\"{}\"]", new_name_esc);
+    }
+    else {
+      old_key = old_infix;
+      new_key = new_infix;
+    }
+  }
+  else {
+    old_key = fmt::format("[{}]", old_subscript);
+    new_key = fmt::format("[{}]", new_subscript);
+  }
+
+  return {old_key, new_key};
 }
 
 }  // namespace blender

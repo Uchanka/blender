@@ -101,6 +101,7 @@ enum eWM_OutlinerSyncSelectDirty : short {
   WM_OUTLINER_SYNC_SELECT_FROM_EDIT_BONE = (1 << 1),
   WM_OUTLINER_SYNC_SELECT_FROM_POSE_BONE = (1 << 2),
   WM_OUTLINER_SYNC_SELECT_FROM_SEQUENCE = (1 << 3),
+  WM_OUTLINER_SYNC_SELECT_FROM_COLLECTION = (1 << 4),
 };
 ENUM_OPERATORS(eWM_OutlinerSyncSelectDirty)
 
@@ -377,7 +378,7 @@ struct wmKeyMapItem {
   int8_t shift = 0;
   int8_t ctrl = 0;
   int8_t alt = 0;
-  /** Also known as "Apple", "Windows-Key" or "Super. */
+  /** Also known as "Apple", "Windows-Key" or "Super". */
   int8_t oskey = 0;
   /** See #KM_HYPER for details. */
   int8_t hyper = 0;

@@ -10,9 +10,9 @@
 
 #include "DNA_object_types.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_geom.h"
-#include "BLI_math_matrix.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_geom_c.hh"
+#include "BLI_math_matrix_c.hh"
 #include "BLI_math_vector_types.hh"
 
 #include "MEM_guardedalloc.h"
@@ -545,14 +545,10 @@ static bool v3d_cursor_is_snap_invert(SnapCursorDataIntern *data_intern, uint8_t
       continue;
     }
 
-    if (kmi.propvalue == snap_on) {
-      if ((ELEM(kmi.type, EVT_LEFTCTRLKEY, EVT_RIGHTCTRLKEY) && (event_modifier & KM_CTRL)) ||
-          (ELEM(kmi.type, EVT_LEFTSHIFTKEY, EVT_RIGHTSHIFTKEY) && (event_modifier & KM_SHIFT)) ||
-          (ELEM(kmi.type, EVT_LEFTALTKEY, EVT_RIGHTALTKEY) && (event_modifier & KM_ALT)) ||
-          ((kmi.type == EVT_OSKEY) && (event_modifier & KM_OSKEY)))
-      {
-        return true;
-      }
+    if ((kmi.propvalue == snap_on) &&
+        WM_event_modifier_flag_match_kmi_press(wmEventModifierFlag(event_modifier), &kmi))
+    {
+      return true;
     }
   }
   return false;
@@ -946,7 +942,7 @@ static void v3d_cursor_snap_draw_fn(bContext *C,
 V3DSnapCursorState *ED_view3d_cursor_snap_state_active_get()
 {
   SnapCursorDataIntern *data_intern = &g_data_intern;
-  if (BLI_listbase_is_empty(&data_intern->state_intern)) {
+  if (data_intern->state_intern.is_empty()) {
     return &g_data_intern.state_default;
   }
   return &(static_cast<SnapStateIntern *>(data_intern->state_intern.last))->snap_state;
@@ -1046,14 +1042,14 @@ V3DSnapCursorState *ED_view3d_cursor_snap_state_create()
 void ED_view3d_cursor_snap_state_free(V3DSnapCursorState *state)
 {
   SnapCursorDataIntern *data_intern = &g_data_intern;
-  if (BLI_listbase_is_empty(&data_intern->state_intern)) {
+  if (data_intern->state_intern.is_empty()) {
     return;
   }
 
   SnapStateIntern *state_intern = STATE_INTERN_GET(state);
   BLI_remlink(&data_intern->state_intern, state_intern);
   MEM_delete(state_intern);
-  if (BLI_listbase_is_empty(&data_intern->state_intern)) {
+  if (data_intern->state_intern.is_empty()) {
     v3d_cursor_snap_free();
   }
 }

@@ -12,7 +12,7 @@
 
 #pragma once
 
-#include "BLI_sys_types.h"
+#include "BLI_sys_types.hh"
 
 namespace blender {
 
@@ -64,6 +64,7 @@ bool GPU_use_hq_normals_workaround();
 bool GPU_geometry_shader_support();
 bool GPU_hdr_support();
 bool GPU_stencil_export_support();
+bool GPU_ray_query_support();
 
 bool GPU_mem_stats_supported();
 void GPU_mem_stats_get(int *r_totalmem, int *r_freemem);

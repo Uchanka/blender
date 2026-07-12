@@ -24,15 +24,13 @@ void node_bsdf_glossy(float4 color,
   float3 V = coordinate_incoming(g_data.P);
   float NV = dot(N, V);
 
-  auto &utility_tx = sampler_get(eevee_utility_texture, utility_tx);
-  eevee::lut::GGXBrdfData lut = eevee::lut::GGXBrdfData::sample_utility_tx(
-      utility_tx, NV, roughness);
+  [[resource_table]] UtilityTexture &util_tx = resource_table_get(UtilityTexture);
+  eevee::lut::GGXBrdfData lut = eevee::lut::GGXBrdfData::sample_utility_tx(util_tx, NV, roughness);
 
   ClosureReflection reflection_data;
-  reflection_data.weight = weight;
-  reflection_data.color = (do_multiscatter != 0.0f) ?
-                              F_brdf_multi_scatter(color.rgb, color.rgb, lut) :
-                              F_brdf_single_scatter(color.rgb, color.rgb, lut);
+  reflection_data.color = weight * ((do_multiscatter != 0.0f) ?
+                                        F_brdf_multi_scatter(color.rgb, color.rgb, lut) :
+                                        F_brdf_single_scatter(color.rgb, color.rgb, lut));
   reflection_data.N = N;
   reflection_data.roughness = roughness;
 

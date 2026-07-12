@@ -11,10 +11,10 @@
 #include "DNA_scene_types.h"
 #include "DNA_sequence_types.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_base.h"
-#include "BLI_string.h"
-#include "BLI_string_utf8.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_base_c.hh"
+#include "BLI_string.hh"
+#include "BLI_string_utf8.hh"
 
 #include "BLT_translation.hh"
 
@@ -248,7 +248,7 @@ bool edit_move_strip_to_meta(Scene *scene,
 
   VectorSet<Strip *> strips;
   strips.add(src_strip);
-  iterator_set_expand(seqbase, strips, query_strip_effect_chain);
+  iterator_set_expand(ed, strips, query_strip_effect_chain);
 
   for (Strip *strip : strips) {
     /* Move to meta. */
@@ -422,7 +422,7 @@ Strip *edit_strip_split(Main *bmain,
   /* Whole strip effect chain must be duplicated in order to preserve relationships. */
   VectorSet<Strip *> strips;
   strips.add(strip);
-  iterator_set_expand(seqbase,
+  iterator_set_expand(seq::editing_get(scene),
                       strips,
                       ignore_connections ? query_strip_effect_chain :
                                            query_strip_connected_and_effect_chain);

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "BLI_sys_types.h"
+#include "BLI_sys_types.hh"
 #include "BLI_vector.hh"
 struct CLG_LogRef;
 namespace blender {
@@ -18,6 +18,7 @@ struct ID;
 struct Main;
 struct MemFile;
 struct PointerRNA;
+struct PropertyRNA;
 struct Object;
 struct Scene;
 struct UndoStack;
@@ -64,6 +65,10 @@ void ED_undo_operator_repeat_cb_evt(bContext *C, void *arg_op, int arg_unused);
  * Name optionally, function used to check for operator redo panel.
  */
 bool ED_undo_is_valid(const bContext *C, const char *undoname);
+/**
+ * Returns true if there are redo steps available.
+ */
+bool ED_undo_has_redo_step(const bContext *C);
 
 bool ED_undo_is_memfile_compatible(const bContext *C);
 
@@ -77,7 +82,10 @@ bool ED_undo_is_memfile_compatible(const bContext *C);
  * For example, changing a brush property isn't stored by sculpt-mode undo steps.
  * This workaround is needed until the limitation is removed, see: #61948.
  */
-bool ED_undo_is_legacy_compatible_for_property(bContext *C, ID *id, PointerRNA &ptr);
+bool ED_undo_is_legacy_compatible_for_property(bContext *C,
+                                               ID *id,
+                                               const PointerRNA &ptr,
+                                               const PropertyRNA &prop);
 
 /**
  * This function addresses the problem of restoring undo steps when multiple windows are used.
@@ -139,7 +147,8 @@ void ED_undosys_type_free();
 
 /* `memfile_undo.cc` */
 
-MemFile *ED_undosys_stack_memfile_get_if_active(UndoStack *ustack);
+bool ED_undosys_autosave_compatible(UndoStack *ustack);
+
 /**
  * If the last undo step is a memfile one, find the first #MemFileChunk matching given ID
  * (using its session UUID), and tag it as "changed in the future".

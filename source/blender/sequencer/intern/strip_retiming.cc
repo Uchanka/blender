@@ -14,10 +14,10 @@
 #include "DNA_sequence_types.h"
 
 #include "BLI_bounds.hh"
-#include "BLI_listbase.h"
+#include "BLI_listbase.hh"
 #include "BLI_map.hh"
-#include "BLI_math_geom.h"
-#include "BLI_math_vector.h"
+#include "BLI_math_geom_c.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_math_vector_types.hh"
 #include "BLI_span.hh"
 #include "BLI_vector.hh"
@@ -405,7 +405,7 @@ static void retiming_key_overlap(Scene *scene, Strip *strip)
   VectorSet<Strip *> strips;
   VectorSet<Strip *> dependant;
   dependant.add(strip);
-  iterator_set_expand(seqbase, dependant, query_strip_effect_chain);
+  iterator_set_expand(seq::editing_get(scene), dependant, query_strip_effect_chain);
   strips.add_multiple(dependant);
   dependant.remove(strip);
   transform_handle_overlap(scene, seqbase, strips, dependant, true);
@@ -419,7 +419,7 @@ void retiming_reset(Scene *scene, Strip *strip)
 
   retiming_data_clear(strip);
 
-  Span<Strip *> effects = SEQ_lookup_effects_by_strip(scene->ed, strip);
+  Span<Strip *> effects = lookup_effects_by_strip(scene->ed, strip);
   strip_time_update_effects_strip_range(scene, effects);
   time_update_meta_strip_range(scene, lookup_meta_by_strip(scene->ed, strip));
 
@@ -974,7 +974,7 @@ void retiming_key_frame_set(const Scene *scene, Strip *strip, SeqRetimingKey *ke
         scene, strip, key, strip_retiming_clamp_offset(scene, strip, key, offset));
   }
 
-  Span<Strip *> effects = SEQ_lookup_effects_by_strip(scene->ed, strip);
+  Span<Strip *> effects = lookup_effects_by_strip(scene->ed, strip);
   strip_time_update_effects_strip_range(scene, effects);
   time_update_meta_strip_range(scene, lookup_meta_by_strip(scene->ed, strip));
 }

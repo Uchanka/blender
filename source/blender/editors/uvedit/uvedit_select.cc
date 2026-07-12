@@ -18,20 +18,20 @@
 #include "DNA_space_types.h"
 
 #include "BLI_array.hh"
-#include "BLI_hash.h"
-#include "BLI_heap.h"
+#include "BLI_hash_c.hh"
+#include "BLI_heap.hh"
 #include "BLI_kdopbvh.hh"
 #include "BLI_kdtree.hh"
 #include "BLI_lasso_2d.hh"
-#include "BLI_listbase.h"
+#include "BLI_listbase.hh"
 #include "BLI_map.hh"
-#include "BLI_math_geom.h"
-#include "BLI_math_matrix.h"
-#include "BLI_math_vector.h"
-#include "BLI_memarena.h"
-#include "BLI_polyfill_2d.h"
-#include "BLI_polyfill_2d_beautify.h"
-#include "BLI_utildefines.h"
+#include "BLI_math_geom_c.hh"
+#include "BLI_math_matrix_c.hh"
+#include "BLI_math_vector_c.hh"
+#include "BLI_memarena.hh"
+#include "BLI_polyfill_2d.hh"
+#include "BLI_polyfill_2d_beautify.hh"
+#include "BLI_utildefines.hh"
 #include "BLI_vector_list.hh"
 
 #include "BLT_translation.hh"
@@ -2976,12 +2976,12 @@ struct UVSelectLinkedHelper : NonCopyable, NonMovable {
   bool face_add(BMFace *efa)
   {
     /* Lazily create the UV vertex map, stack, and face tracking. */
-    if (UNLIKELY(!has_data)) {
+    if (!has_data) [[unlikely]] {
       const ToolSettings *ts = scene->toolsettings;
       const bool uv_select_sync = (ts->uv_flag & UV_FLAG_SELECT_SYNC);
       BM_mesh_elem_table_ensure(bm, BM_FACE);
       vmap_ = BM_uv_vert_map_create(bm, !uv_select_sync, true);
-      if (UNLIKELY(vmap_ == nullptr)) {
+      if (vmap_ == nullptr) [[unlikely]] {
         /* This will keep attempting to allocate on every `face_add` call.
          * This is weak but such a corner case that it's not worth attempting to
          * gracefully handle the code path in the case there is no mapping data to use. */
@@ -5882,7 +5882,7 @@ static bool overlap_tri_tri_uv_test(const float t1[3][2],
   return false;
 }
 
-static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend)
+static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend, const bool select_island)
 {
   Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
   const Main *bmain = CTX_data_main(C);
@@ -6118,6 +6118,27 @@ static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend)
     BLI_bvhtree_overlap_ex(probe_tree, uv_tree, nullptr, bvh_overlap_fn, &query_data, 1, 0);
   }
 
+  if (select_island) {
+    for (const int i : IndexRange(objects.size())) {
+      if (!objects_tag[i].has_overlap) {
+        continue;
+      }
+
+      Object *obedit = objects[i];
+      BMesh *bm = BKE_editmesh_from_object(obedit)->bm;
+      UVSelectLinkedHelper linked_helper(scene, bm);
+
+      BMFace *efa;
+      BMIter iter;
+      BM_ITER_MESH (efa, &iter, bm, BM_FACES_OF_MESH) {
+        if (BM_elem_flag_test(efa, BM_ELEM_TAG)) {
+          linked_helper.face_add(efa);
+        }
+      }
+      linked_helper.tag_all();
+    }
+  }
+
   for (const int i : IndexRange(objects.size())) {
     Object *obedit = objects[i];
     const ChangedInfo &tag_info = objects_tag[i];
@@ -6157,8 +6178,11 @@ static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend)
 
 static wmOperatorStatus uv_select_overlap_exec(bContext *C, wmOperator *op)
 {
+  const ToolSettings *ts = CTX_data_tool_settings(C);
+  const bool use_select_linked = ED_uvedit_select_island_check(ts);
+
   bool extend = RNA_boolean_get(op->ptr, "extend");
-  return uv_select_overlap(C, extend);
+  return uv_select_overlap(C, extend, use_select_linked);
 }
 
 void UV_OT_select_overlap(wmOperatorType *ot)
@@ -6466,22 +6490,8 @@ static wmOperatorStatus uv_select_similar_vert_exec(bContext *C, wmOperator *op)
   Vector<Object *> objects = BKE_view_layer_array_from_objects_in_edit_mode_unique_data_with_uvs(
       *bmain, scene, view_layer, nullptr);
 
-  int max_verts_selected_all = 0;
-  for (Object *ob : objects) {
-    BMesh *bm = BKE_editmesh_from_object(ob)->bm;
-    BMFace *face;
-    BMIter iter;
-    BM_ITER_MESH (face, &iter, bm, BM_FACES_OF_MESH) {
-      if (!uvedit_face_visible_test(scene, face)) {
-        continue;
-      }
-      max_verts_selected_all += face->len;
-    }
-    /* TODO: Get a tighter bounds */
-  }
-
   int tree_index = 0;
-  KDTree<float> *tree_1d = kdtree_new<float>(max_verts_selected_all);
+  Map<float, int> points_1d;
 
   for (Object *ob : objects) {
     BMesh *bm = BKE_editmesh_from_object(ob)->bm;
@@ -6506,15 +6516,16 @@ static wmOperatorStatus uv_select_similar_vert_exec(bContext *C, wmOperator *op)
           continue;
         }
         float needle = get_uv_vert_needle(type, l->v, ob_m3, l, offsets);
-        kdtree_insert<float>(tree_1d, tree_index++, needle);
+        points_1d.add(needle, tree_index++);
       }
     }
   }
 
-  if (tree_1d != nullptr) {
-    kdtree_deduplicate<float>(tree_1d);
-    kdtree_balance<float>(tree_1d);
+  KDTree<float> *tree_1d = kdtree_new<float>(points_1d.size());
+  for (const auto &[pos, index] : points_1d.items()) {
+    kdtree_insert(tree_1d, index, pos);
   }
+  kdtree_balance<float>(tree_1d);
 
   for (Object *ob : objects) {
     BMesh *bm = BKE_editmesh_from_object(ob)->bm;
@@ -6591,22 +6602,8 @@ static wmOperatorStatus uv_select_similar_edge_exec(bContext *C, wmOperator *op)
   Vector<Object *> objects = BKE_view_layer_array_from_objects_in_edit_mode_unique_data_with_uvs(
       *bmain, scene, view_layer, nullptr);
 
-  int max_edges_selected_all = 0;
-  for (Object *ob : objects) {
-    BMesh *bm = BKE_editmesh_from_object(ob)->bm;
-    BMFace *face;
-    BMIter iter;
-    BM_ITER_MESH (face, &iter, bm, BM_FACES_OF_MESH) {
-      if (!uvedit_face_visible_test(scene, face)) {
-        continue;
-      }
-      max_edges_selected_all += face->len;
-    }
-    /* TODO: Get a tighter bounds. */
-  }
-
   int tree_index = 0;
-  KDTree<float> *tree_1d = kdtree_new<float>(max_edges_selected_all);
+  Map<float, int> points_1d;
 
   for (Object *ob : objects) {
     BMesh *bm = BKE_editmesh_from_object(ob)->bm;
@@ -6632,17 +6629,16 @@ static wmOperatorStatus uv_select_similar_edge_exec(bContext *C, wmOperator *op)
         }
 
         float needle = get_uv_edge_needle(type, l->e, ob_m3, l, l->next, offsets);
-        if (tree_1d) {
-          kdtree_insert<float>(tree_1d, tree_index++, needle);
-        }
+        points_1d.add(needle, tree_index++);
       }
     }
   }
 
-  if (tree_1d != nullptr) {
-    kdtree_deduplicate<float>(tree_1d);
-    kdtree_balance<float>(tree_1d);
+  KDTree<float> *tree_1d = kdtree_new<float>(points_1d.size());
+  for (const auto &[pos, index] : points_1d.items()) {
+    kdtree_insert(tree_1d, index, pos);
   }
+  kdtree_balance<float>(tree_1d);
 
   for (Object *ob : objects) {
     BMesh *bm = BKE_editmesh_from_object(ob)->bm;
@@ -6736,15 +6732,8 @@ static wmOperatorStatus uv_select_similar_face_exec(bContext *C, wmOperator *op)
     }
   }
 
-  int max_faces_selected_all = 0;
-  for (Object *ob : objects) {
-    BMesh *bm = BKE_editmesh_from_object(ob)->bm;
-    max_faces_selected_all += bm->totfacesel;
-    /* TODO: Get a tighter bounds */
-  }
-
   int tree_index = 0;
-  KDTree<float> *tree_1d = kdtree_new<float>(max_faces_selected_all);
+  Map<float, int> points_1d;
 
   for (const int ob_index : objects.index_range()) {
     Object *ob = objects[ob_index];
@@ -6772,16 +6761,15 @@ static wmOperatorStatus uv_select_similar_face_exec(bContext *C, wmOperator *op)
       }
 
       float needle = get_uv_face_needle(type, face, ob_index, ob_m3, offsets, material_remap);
-      if (tree_1d) {
-        kdtree_insert<float>(tree_1d, tree_index++, needle);
-      }
+      points_1d.add(needle, tree_index++);
     }
   }
 
-  if (tree_1d != nullptr) {
-    kdtree_deduplicate<float>(tree_1d);
-    kdtree_balance<float>(tree_1d);
+  KDTree<float> *tree_1d = kdtree_new<float>(points_1d.size());
+  for (const auto &[pos, index] : points_1d.items()) {
+    kdtree_insert(tree_1d, index, pos);
   }
+  kdtree_balance<float>(tree_1d);
 
   for (const int ob_index : objects.index_range()) {
     Object *ob = objects[ob_index];
@@ -6885,7 +6873,7 @@ static wmOperatorStatus uv_select_similar_island_exec(bContext *C, wmOperator *o
   FaceIsland **island_array = MEM_new_array_zeroed<FaceIsland *>(island_list_len, __func__);
 
   int tree_index = 0;
-  KDTree<float> *tree_1d = kdtree_new<float>(island_list_len);
+  Map<float, int> points_1d;
 
   for (const int ob_index : objects.index_range()) {
     Object *obedit = objects[ob_index];
@@ -6900,16 +6888,15 @@ static wmOperatorStatus uv_select_similar_island_exec(bContext *C, wmOperator *o
         continue;
       }
       float needle = get_uv_island_needle(type, &island, ob_m3, island.offsets);
-      if (tree_1d) {
-        kdtree_insert<float>(tree_1d, tree_index++, needle);
-      }
+      points_1d.add(needle, tree_index++);
     }
   }
 
-  if (tree_1d != nullptr) {
-    kdtree_deduplicate<float>(tree_1d);
-    kdtree_balance<float>(tree_1d);
+  KDTree<float> *tree_1d = kdtree_new<float>(points_1d.size());
+  for (const auto &[pos, index] : points_1d.items()) {
+    kdtree_insert(tree_1d, index, pos);
   }
+  kdtree_balance<float>(tree_1d);
 
   int tot_island_index = 0;
   for (const int ob_index : objects.index_range()) {

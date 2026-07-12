@@ -16,11 +16,11 @@
 
 #include "MEM_guardedalloc.h"
 
-#include "BLI_listbase.h"
-#include "BLI_math_base.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_base_c.hh"
 #include "BLI_path_utils.hh"
-#include "BLI_string_utf8.h"
-#include "BLI_utildefines.h"
+#include "BLI_string_utf8.hh"
+#include "BLI_utildefines.hh"
 
 #include "BKE_context.hh"
 #include "BKE_lib_query.hh"
@@ -678,6 +678,7 @@ static void clip_main_region_draw(const bContext *C, ARegion *region)
   /* draw entirely, view changes should be handled here */
   SpaceClip *sc = CTX_wm_space_clip(C);
   MovieClip *clip = ED_space_clip_get_clip(sc);
+  ScrArea *area = CTX_wm_area(C);
   float aspx, aspy, zoomx, zoomy, x, y;
   int width, height;
   bool show_cursor = false;
@@ -788,6 +789,8 @@ static void clip_main_region_draw(const bContext *C, ARegion *region)
   if ((sc->gizmo_flag & SCLIP_GIZMO_HIDE) == 0) {
     WM_gizmomap_draw(region->runtime->gizmo_map, C, WM_GIZMOMAP_DRAWSTEP_2D);
   }
+
+  ED_area_hud_region_set_padding_flag(area, region, true);
 }
 
 static void clip_main_region_listener(const wmRegionListenerParams *params)

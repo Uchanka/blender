@@ -8,7 +8,7 @@
  * GPU shader interface (C --> GLSL)
  */
 
-#include "BLI_bitmap.h"
+#include "BLI_bitmap.hh"
 
 #include "GPU_capabilities.hh"
 
@@ -19,9 +19,9 @@
 #include "mtl_shader_interface.hh"
 #include "mtl_shader_interface_type.hh"
 
-#include "BLI_math_base.h"
-#include "BLI_string.h"
-#include "BLI_utildefines.h"
+#include "BLI_math_base_c.hh"
+#include "BLI_string.hh"
+#include "BLI_utildefines.hh"
 #include "MEM_guardedalloc.h"
 
 namespace blender::gpu {
@@ -59,6 +59,9 @@ MTLShaderInterface::MTLShaderInterface(const char *name,
         break;
       case ShaderCreateInfo::Resource::BindType::STORAGE_BUFFER:
         ssbo_len_++;
+        break;
+      case ShaderCreateInfo::Resource::BindType::ACCELERATION_STRUCTURE:
+        BLI_assert_unreachable();
         break;
     }
   }

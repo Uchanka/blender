@@ -471,6 +471,8 @@ def km_property_editor(params):
         ("constraint.delete", {"type": 'BACK_SPACE', "value": 'PRESS'}, {"properties": [("report", True)]}),
         ("constraint.delete", {"type": 'DEL', "value": 'PRESS'}, {"properties": [("report", True)]}),
         ("constraint.copy", {"type": 'D', "value": 'PRESS', "ctrl": True}, None),
+        # Strip modifiers
+        ("sequencer.strip_modifier_set_active", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
     ])
 
     return keymap
@@ -1266,17 +1268,30 @@ def km_file_browser(params):
         ("file.previous", {"type": 'LEFT_ARROW', "value": 'PRESS', "alt": True}, None),
         ("file.previous", {"type": 'LEFT_ARROW', "value": 'PRESS', "ctrl": True}, None),
         ("file.previous", {"type": 'BUTTON4MOUSE', "value": 'PRESS'}, None),
+        ("file.previous", {"type": 'LEFT_BRACKET', "value": 'PRESS', "ctrl": True}, None),
         ("file.next", {"type": 'RIGHT_ARROW', "value": 'PRESS', "alt": True}, None),
         ("file.next", {"type": 'RIGHT_ARROW', "value": 'PRESS', "ctrl": True}, None),
         ("file.next", {"type": 'BUTTON5MOUSE', "value": 'PRESS'}, None),
+        ("file.next", {"type": 'RIGHT_BRACKET', "value": 'PRESS', "ctrl": True}, None),
+        ("wm.context_set_enum", {"type": 'ONE', "value": 'PRESS', "ctrl": True},
+         {"properties": [("data_path", "space_data.params.display_type"), ("value", 'LIST_VERTICAL')]}),
+        ("wm.context_set_enum", {"type": 'TWO', "value": 'PRESS', "ctrl": True},
+         {"properties": [("data_path", "space_data.params.display_type"), ("value", 'LIST_HORIZONTAL')]}),
+        ("wm.context_set_enum", {"type": 'THREE', "value": 'PRESS', "ctrl": True},
+         {"properties": [("data_path", "space_data.params.display_type"), ("value", 'THUMBNAIL')]}),
         # The two refresh operators have polls excluding each other (so only one is available depending on context).
         ("file.refresh", {"type": 'R', "value": 'PRESS', "ctrl": True}, None),
         ("asset.library_refresh", {"type": 'R', "value": 'PRESS', "ctrl": True}, None),
+        ("asset.library_reload_listing", {"type": 'R', "value": 'PRESS', "shift": True}, None),
         ("file.previous", {"type": 'BACK_SPACE', "value": 'PRESS'}, None),
         ("file.next", {"type": 'BACK_SPACE', "value": 'PRESS', "shift": True}, None),
         ("wm.context_toggle", {"type": 'H', "value": 'PRESS'},
          {"properties": [("data_path", "space_data.params.show_hidden")]}),
-        ("file.directory_new", {"type": 'I', "value": 'PRESS'},
+        ("wm.context_toggle", {"type": 'H', "value": 'PRESS', "ctrl": True},
+         {"properties": [("data_path", "space_data.params.show_hidden")]}),
+        ("wm.context_toggle", {"type": 'PERIOD', "value": 'PRESS', "ctrl": True, "shift": True},
+         {"properties": [("data_path", "space_data.params.show_hidden")]}),
+        ("file.directory_new", {"type": 'N', "value": 'PRESS', "ctrl": True, "shift": True},
          {"properties": [("confirm", False)]}),
         ("file.rename", {"type": 'F2', "value": 'PRESS'}, None),
         ("file.delete", {"type": 'DEL', "value": 'PRESS'}, None),
@@ -1319,6 +1334,7 @@ def km_file_browser_main(params):
         # The two refresh operators have polls excluding each other (so only one is available depending on context).
         ("file.refresh", {"type": 'R', "value": 'PRESS', "ctrl": True}, None),
         ("asset.library_refresh", {"type": 'R', "value": 'PRESS', "ctrl": True}, None),
+        ("asset.library_reload_listing", {"type": 'R', "value": 'PRESS', "shift": True}, None),
         ("file.select", {"type": 'LEFTMOUSE', "value": 'PRESS'},
          {"properties": [("open", False), ("deselect_all", True)]}),
         ("file.select", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True},
@@ -1865,6 +1881,7 @@ def km_sequencer(params):
         ("sequencer.retiming_key_delete", {"type": 'DEL', "value": 'PRESS'}, None),
         ("sequencer.delete", {"type": 'BACK_SPACE', "value": 'PRESS'}, None),
         ("sequencer.delete", {"type": 'DEL', "value": 'PRESS'}, None),
+        ("sequencer.ripple_delete", {"type": 'DEL', "value": 'PRESS', "shift": True}, None),
         ("sequencer.copy", {"type": 'C', "value": 'PRESS', "ctrl": True}, None),
         ("sequencer.paste", {"type": 'V', "value": 'PRESS', "ctrl": True}, None),
         ("sequencer.images_separate", {"type": 'Y', "value": 'PRESS'}, None),
@@ -2860,6 +2877,8 @@ def km_vertex_paint(params):
          {"properties": [("data_path", "tool_settings.vertex_paint.brush.use_smooth_stroke")]}),
         # Context menu.
         *_template_items_context_panel("VIEW3D_PT_paint_vertex_context_menu", {"type": 'RIGHTMOUSE', "value": 'PRESS'}),
+        # Pie Menu
+        op_menu_pie("VIEW3D_MT_mesh_paint_automasking_pie", {"type": 'A', "alt": True, "value": 'PRESS'}),
         # Tools
         op_tool_cycle("builtin.select_box", {"type": 'Q', "value": 'PRESS'}),
         op_tool_cycle("builtin.annotate", {"type": 'D', "value": 'PRESS'}),
@@ -2907,6 +2926,8 @@ def km_weight_paint(params):
          {"properties": [("data_path", "tool_settings.weight_paint.brush.use_smooth_stroke")]}),
         # Context menu.
         *_template_items_context_panel("VIEW3D_PT_paint_weight_context_menu", {"type": 'RIGHTMOUSE', "value": 'PRESS'}),
+        # Pie Menu
+        op_menu_pie("VIEW3D_MT_mesh_paint_automasking_pie", {"type": 'A', "alt": True, "value": 'PRESS'}),
         # For combined weight paint + pose mode.
         ("view3d.select", {"type": 'LEFTMOUSE', "value": 'PRESS', "shift": True, "alt": True}, None),
         op_tool_cycle("builtin.move", {"type": 'W', "value": 'PRESS'}),
@@ -3045,7 +3066,7 @@ def km_sculpt(params):
         op_tool_cycle("builtin.transform", {"type": 'T', "value": 'PRESS'}),
         # Menus
         op_menu_pie("VIEW3D_MT_sculpt_mask_edit_pie", {"type": 'A', "ctrl": True, "value": 'PRESS'}),
-        op_menu_pie("VIEW3D_MT_sculpt_automasking_pie", {"type": 'A', "alt": True, "value": 'PRESS'}),
+        op_menu_pie("VIEW3D_MT_mesh_paint_automasking_pie", {"type": 'A', "alt": True, "value": 'PRESS'}),
         op_menu_pie("VIEW3D_MT_sculpt_face_sets_edit_pie", {"type": 'W', "ctrl": True, "value": 'PRESS'}),
         *_template_items_context_panel("VIEW3D_PT_sculpt_context_menu", {"type": 'RIGHTMOUSE', "value": 'PRESS'}),
         op_asset_shelf_popup("VIEW3D_AST_brush_sculpt", {"type": 'B', "value": 'PRESS'}),

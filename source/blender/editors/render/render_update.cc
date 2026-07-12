@@ -25,8 +25,8 @@
 
 #include "DRW_engine.hh"
 
-#include "BLI_listbase.h"
-#include "BLI_threads.h"
+#include "BLI_listbase.hh"
+#include "BLI_threads.hh"
 
 #include "BKE_brush.hh"
 #include "BKE_context.hh"
@@ -38,6 +38,7 @@
 #include "BKE_node_tree_update.hh"
 #include "BKE_paint.hh"
 #include "BKE_scene.hh"
+#include "BKE_scene_runtime.hh"
 
 #include "RE_engine.h"
 #include "RE_pipeline.h"
@@ -108,15 +109,17 @@ void ED_render_view3d_update(Depsgraph *depsgraph,
 static void update_compositor(const DEGEditorUpdateContext *update_context)
 {
   const Scene *scene = DEG_get_evaluated(update_context->depsgraph, update_context->scene);
-  const bNodeTree *node_tree = scene->compositing_node_group;
-  if (!node_tree) {
+  if (!(scene->id.recalc & ID_RECALC_COMPOSITOR)) {
     return;
   }
 
-  if (node_tree->id.recalc & ID_RECALC_NTREE_OUTPUT) {
-    ED_node_compositor_job(
-        update_context->bmain, update_context->scene, update_context->view_layer);
+  const bool is_user_modified = DEG_id_is_user_modified(update_context->depsgraph, &scene->id);
+  if (is_user_modified) {
+    update_context->scene->runtime->compositor.cache.clear_frames();
   }
+
+  ED_node_compositor_job(
+      update_context->bmain, update_context->scene, update_context->view_layer, is_user_modified);
 }
 
 void ED_render_scene_update(const DEGEditorUpdateContext *update_ctx, const bool updated)
@@ -136,7 +139,7 @@ void ED_render_scene_update(const DEGEditorUpdateContext *update_ctx, const bool
   }
 
   /* Do not call if no WM available, see #42688. */
-  if (BLI_listbase_is_empty(&bmain->wm)) {
+  if (bmain->wm.is_empty()) {
     return;
   }
 
@@ -313,21 +316,17 @@ static void scene_changed(Main *bmain, Scene *scene)
 
 static void update_sequencer(const DEGEditorUpdateContext *update_ctx, Main *bmain, ID *id)
 {
-  if (ELEM(id->recalc,
-           0,
-           ID_RECALC_SELECT,
-           ID_RECALC_FRAME_CHANGE,
-           ID_RECALC_AUDIO_FPS,
-           ID_RECALC_AUDIO_VOLUME,
-           ID_RECALC_AUDIO_MUTE,
-           ID_RECALC_AUDIO_LISTENER,
-           ID_RECALC_AUDIO))
-  {
+  const uint ignored = ID_RECALC_SELECT | ID_RECALC_FRAME_CHANGE | ID_RECALC_AUDIO_FPS |
+                       ID_RECALC_AUDIO_VOLUME | ID_RECALC_AUDIO_MUTE | ID_RECALC_AUDIO_LISTENER |
+                       ID_RECALC_AUDIO;
+  if ((id->recalc & ~ignored) == 0) {
     return;
   }
   Scene *changed_scene = update_ctx->scene;
 
-  if (GS(id->name) != ID_SCE) {
+  /* Changed datablocks invalidate camera-input scene strips.
+   * Changed strips invalidate sequencer-input scene strips. */
+  if (GS(id->name) != ID_SCE || id->recalc & ID_RECALC_SEQUENCER_STRIPS) {
     seq::relations_invalidate_scene_strips(bmain, changed_scene);
   }
 

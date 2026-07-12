@@ -11,12 +11,15 @@
 #include <cstdint>
 #include <memory>
 
-#include "BLI_fileops.h"
+#include "BLI_fileops.hh"
 #include "BLI_map.hh"
 
 #include "DNA_listBase.h"
 #include "DNA_space_enums.h"
 #include "DNA_space_types.h"
+
+#include "IMB_thumbs.hh"
+
 struct BlendHandle;
 namespace blender {
 
@@ -27,7 +30,6 @@ using FileUID = uint32_t;
 struct AssetLibraryReference;
 struct FileDirEntry;
 struct FileIndexerType;
-struct GHash;
 struct ID;
 struct PreviewImage;
 struct ThreadQueue;
@@ -85,7 +87,7 @@ struct FileListInternEntry {
   /* See #FILE_ENTRY_BLENDERLIB_NO_PREVIEW. */
   bool blenderlib_has_no_preview = false;
 
-  /** Defined in BLI_fileops.h */
+  /** Defined in BLI_fileops.hh */
   eFileAttributes attributes = eFileAttributes(0);
   BLI_stat_t st = {0};
 
@@ -144,6 +146,7 @@ struct FileListEntryCache {
   /* Previews handling. */
   TaskPool *previews_pool = nullptr;
   ThreadQueue *previews_done = nullptr;
+  ThumbCancellationToken previews_cancel_token;
   /** Counter for previews that are not fully loaded and ready to display yet. So includes all
    * previews either in `previews_pool` or `previews_done`. #filelist_cache_previews_update() makes
    * previews in `preview_done` ready for display, so the counter is decremented there. */

@@ -13,23 +13,27 @@
 
 #include <fmt/format.h>
 
+#include "BLI_rect.hh"
+#include "DNA_space_enums.h"
+#include "ED_asset_menu_utils.hh"
 #include "MEM_guardedalloc.h"
 
+#include "AS_asset_library.hh"
 #include "AS_asset_representation.hh"
 #include "AS_remote_library.hh"
 
-#include "BLI_fileops.h"
-#include "BLI_fileops_types.h"
-#include "BLI_listbase.h"
-#include "BLI_math_color.h"
-#include "BLI_math_vector.h"
+#include "BLI_fileops.hh"
+#include "BLI_fileops_types.hh"
+#include "BLI_listbase.hh"
+#include "BLI_math_color_c.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_path_utils.hh"
-#include "BLI_string.h"
-#include "BLI_string_utf8.h"
-#include "BLI_utildefines.h"
+#include "BLI_string.hh"
+#include "BLI_string_utf8.hh"
+#include "BLI_utildefines.hh"
 
 #ifdef WIN32
-#  include "BLI_winstuff.h"
+#  include "BLI_winstuff.hh"
 #endif
 
 #include "BIF_glutil.hh"
@@ -67,6 +71,7 @@
 #include "UI_interface.hh"
 #include "UI_interface_c.hh"
 #include "UI_interface_icons.hh"
+#include "UI_interface_layout.hh"
 #include "UI_resources.hh"
 #include "UI_view2d.hh"
 
@@ -77,6 +82,7 @@
 #include "GPU_immediate_util.hh"
 #include "GPU_state.hh"
 
+#include "file_banner.hh"
 #include "filelist.hh"
 
 #include "file_intern.hh" /* own include */
@@ -116,7 +122,6 @@ void ED_file_path_button(bScreen *screen,
                   0.0f,
                   float(FILE_MAX),
                   TIP_("File path"));
-  button_retval_set(but, -1);
 
   BLI_assert(!button_flag_is_set(but, ui::BUT_UNDO));
   BLI_assert(!but_is_utf8(but));
@@ -213,7 +218,7 @@ static void file_draw_tooltip_custom_func(bContext & /*C*/,
       if (thumb) {
         /* Look for version in existing thumbnail if available. */
         IMB_metadata_get_field(
-            thumb->metadata, "Thumb::Blender::Version", version_str, sizeof(version_str));
+            thumb->metadata(), "Thumb::Blender::Version", version_str, sizeof(version_str));
       }
 
       if (!version_str[0] && !(file->attributes & FILE_ATTR_OFFLINE)) {
@@ -242,9 +247,9 @@ static void file_draw_tooltip_custom_func(bContext & /*C*/,
         char value1[128];
         char value2[128];
         if (IMB_metadata_get_field(
-                thumb->metadata, "Thumb::Image::Width", value1, sizeof(value1)) &&
+                thumb->metadata(), "Thumb::Image::Width", value1, sizeof(value1)) &&
             IMB_metadata_get_field(
-                thumb->metadata, "Thumb::Image::Height", value2, sizeof(value2)))
+                thumb->metadata(), "Thumb::Image::Height", value2, sizeof(value2)))
         {
           tooltip_text_field_add(tip,
                                  fmt::format("{} \u00D7 {}", value1, value2),
@@ -265,9 +270,9 @@ static void file_draw_tooltip_custom_func(bContext & /*C*/,
         char value2[128];
         char value3[128];
         if (IMB_metadata_get_field(
-                thumb->metadata, "Thumb::Video::Width", value1, sizeof(value1)) &&
+                thumb->metadata(), "Thumb::Video::Width", value1, sizeof(value1)) &&
             IMB_metadata_get_field(
-                thumb->metadata, "Thumb::Video::Height", value2, sizeof(value2)))
+                thumb->metadata(), "Thumb::Video::Height", value2, sizeof(value2)))
         {
           tooltip_text_field_add(tip,
                                  fmt::format("{} \u00D7 {}", value1, value2),
@@ -276,10 +281,11 @@ static void file_draw_tooltip_custom_func(bContext & /*C*/,
                                  ui::TIP_LC_NORMAL);
         }
         if (IMB_metadata_get_field(
-                thumb->metadata, "Thumb::Video::Frames", value1, sizeof(value1)) &&
-            IMB_metadata_get_field(thumb->metadata, "Thumb::Video::FPS", value2, sizeof(value2)) &&
+                thumb->metadata(), "Thumb::Video::Frames", value1, sizeof(value1)) &&
             IMB_metadata_get_field(
-                thumb->metadata, "Thumb::Video::Duration", value3, sizeof(value3)))
+                thumb->metadata(), "Thumb::Video::FPS", value2, sizeof(value2)) &&
+            IMB_metadata_get_field(
+                thumb->metadata(), "Thumb::Video::Duration", value3, sizeof(value3)))
         {
           tooltip_text_field_add(
               tip,
@@ -390,15 +396,49 @@ static void file_draw_asset_tooltip_custom_func(bContext & /*C*/,
   ed::asset::asset_tooltip(*asset, tip);
 }
 
-static void draw_tile_background(const rcti *draw_rect, int colorid, int shade)
+static void draw_tile_background(const rcti *draw_rect, bool is_selected, bool is_highlighted)
 {
-  float color[4];
+  uiWidgetColors wcol = ui::theme::theme_get()->tui.wcol_list_item;
+  float color_background_1[4], color_background_2[4], color_outline[4];
+  const float roundness = wcol.roundness * U.widget_unit;
   rctf draw_rect_fl;
   BLI_rctf_rcti_copy(&draw_rect_fl, draw_rect);
 
-  ui::theme::get_color_shade_4fv(colorid, shade, color);
+  if (is_selected) {
+    rgba_uchar_to_float(color_background_1, wcol.inner_sel);
+    rgba_uchar_to_float(color_outline, wcol.outline_sel);
+    std::swap(wcol.shadetop, wcol.shadedown);
+  }
+  else {
+    rgba_uchar_to_float(color_background_1, wcol.inner);
+    rgba_uchar_to_float(color_outline, wcol.outline);
+  }
+
+  /* Gradient fill, if list_item is set to shaded in the theme. */
+  if (wcol.shaded == 0) {
+    copy_v4_v4(color_background_2, color_background_1);
+  }
+  else {
+    constexpr float inv_255 = 1.0f / 255.0f;
+    float color_base[3];
+    copy_v3_v3(color_base, color_background_1);
+
+    for (int i = 0; i < 3; i++) {
+      color_background_1[i] = std::clamp(color_base[i] + wcol.shadetop * inv_255, 0.0f, 1.0f);
+      color_background_2[i] = std::clamp(color_base[i] + wcol.shadedown * inv_255, 0.0f, 1.0f);
+    }
+  }
+
+  /* Hover effect. Force opacity of inner color at least 10%. */
+  if (is_highlighted) {
+    color_background_1[3] = std::min(color_background_1[3] + 0.1f, 1.0f);
+  }
+
+  color_background_2[3] = color_background_1[3];
+
   draw_roundbox_corner_set(ui::CNR_ALL);
-  ui::draw_roundbox_aa(&draw_rect_fl, true, 5.0f, color);
+  ui::draw_roundbox_4fv_ex(
+      &draw_rect_fl, color_background_1, color_background_2, 1.0f, color_outline, 1.0f, roundness);
 }
 
 static void file_but_enable_drag(ui::Button *but,
@@ -730,6 +770,34 @@ static void file_add_preview_drag_but(const SpaceFile *sfile,
   file_but_tooltip_func_set(sfile, file, but);
 }
 
+static void file_add_asset_download_but(ui::Block *block,
+                                        const FileLayout *layout,
+                                        const FileDirEntry *file,
+                                        const rcti *tile_draw_rect)
+{
+  const int preview_center_x = BLI_rcti_cent_x(tile_draw_rect);
+  const int preview_center_y = tile_draw_rect->ymax - layout->tile_border_y - layout->prv_h * 0.5f;
+  const int icon_width = ICON_DEFAULT_WIDTH_SCALE * 2.0f;
+  const int icon_height = ICON_DEFAULT_HEIGHT_SCALE * 2.0f;
+  const int icon_x = preview_center_x - icon_width * 0.5f;
+  const int icon_y = preview_center_y - icon_height * 0.5f;
+
+  ui::Button *but = uiDefIconButO(block,
+                                  ui::ButtonType::But,
+                                  "ASSET_OT_asset_download",
+                                  wm::OpCallContext::ExecDefault,
+                                  ICON_DOWNLOAD,
+                                  icon_x,
+                                  icon_y,
+                                  icon_width,
+                                  icon_height,
+                                  std::nullopt);
+  PointerRNA *opptr = ui::button_operator_ptr_ensure(but);
+  ed::asset::operator_asset_reference_props_set(*file->asset, *opptr);
+  ui::button_icon_scale_set(but, 1.5f);
+  ui::button_pushbutton_draw_as_overlay_set(but, true);
+}
+
 static void file_draw_preview(const FileDirEntry *file,
                               const rcti *tile_draw_rect,
                               const IconBufferRef &preview,
@@ -770,20 +838,17 @@ static void file_draw_preview(const FileDirEntry *file,
   const gpu::TextureFormat format = gpu::TextureFormat::UNORM_8_8_8_8;
   BLI_assert_msg(preview.channels == 4, "preview images are expected to be 4 channels");
 
-  IMMDrawPixelsTexState state = immDrawPixelsTexSetup(GPU_SHADER_3D_IMAGE_COLOR);
-  immDrawPixelsTexTiled_scaling(&state,
-                                float(xmin),
-                                float(ymin),
-                                preview.width,
-                                preview.height,
-                                format,
-                                true,
-                                preview.buffer.data(),
-                                scale,
-                                scale,
-                                1.0f,
-                                1.0f,
-                                document_img_col);
+  PixelBitmapDrawer drawer(GPU_SHADER_3D_IMAGE_COLOR);
+  drawer.draw(float(xmin),
+              float(ymin),
+              preview.width,
+              preview.height,
+              format,
+              true,
+              preview.buffer.data(),
+              scale,
+              scale,
+              document_img_col);
 
   const bool show_outline = (file->typeflag & (FILE_TYPE_IMAGE | FILE_TYPE_OBJECT_IO |
                                                FILE_TYPE_MOVIE | FILE_TYPE_BLENDER));
@@ -826,7 +891,8 @@ static void file_draw_special_image(const FileDirEntry *file,
     ui::theme::get_color_4fv(TH_ICON_FOLDER, document_img_col);
   }
   else {
-    ui::theme::get_color_4fv(TH_TEXT, document_img_col);
+    const uiWidgetColors wcol = ui::theme::theme_get()->tui.wcol_list_item;
+    rgba_uchar_to_float(document_img_col, wcol.item);
   }
 
   if (dimmed) {
@@ -918,28 +984,32 @@ static void file_draw_indicator_icons(const FileList *files,
                                       const float preview_icon_aspect,
                                       const int file_type_icon,
                                       const bool has_special_file_image,
-                                      const eDirEntry_SelectFlag selflag)
+                                      const eDirEntry_SelectFlag /*selflag*/)
 {
   const bool is_offline = (file->attributes & FILE_ATTR_OFFLINE);
   const bool is_link = (file->attributes & FILE_ATTR_ANY_LINK);
   const bool is_loading = filelist_file_is_preview_pending(files, file);
+
+  const uiWidgetColors wcol = ui::theme::theme_get()->tui.wcol_list_item;
+  const uchar *icon_color = wcol.item;
+  const uchar icon_color_lightness = srgb_to_grayscale_byte(icon_color);
+  const bool show_icon_border = (icon_color_lightness > 96);
 
   /* Don't draw these icons if the preview image is small. They are just indicators and shouldn't
    * cover the preview. */
   if (preview_icon_aspect < 2.0f) {
     const float icon_x = float(tile_draw_rect->xmin) + (3.0f * UI_SCALE_FAC);
     const float icon_y = float(tile_draw_rect->ymax) - layout->prv_border_y - layout->prv_h;
-    const uchar light[4] = {255, 255, 255, 255};
     if (is_offline) {
       /* Icon at bottom to indicate the file is offline. */
       ui::icon_draw_ex(icon_x,
                        icon_y,
                        ICON_INTERNET,
                        1.0f / UI_SCALE_FAC,
-                       0.6f,
+                       1.0f,
                        0.0f,
-                       light,
-                       true,
+                       icon_color,
+                       show_icon_border,
                        UI_NO_ICON_OVERLAY_TEXT);
     }
     else if (is_link) {
@@ -967,10 +1037,10 @@ static void file_draw_indicator_icons(const FileList *files,
                          icon_y,
                          file_type_icon,
                          1.0f / UI_SCALE_FAC,
-                         0.6f,
+                         1.0f,
                          0.0f,
-                         light,
-                         true,
+                         icon_color,
+                         show_icon_border,
                          UI_NO_ICON_OVERLAY_TEXT);
       }
     }
@@ -979,7 +1049,6 @@ static void file_draw_indicator_icons(const FileList *files,
   {
     const float icon_x = float(tile_draw_rect->xmax) - (16.0f * UI_SCALE_FAC);
     const float icon_y = float(tile_draw_rect->ymax) - (20.0f * UI_SCALE_FAC);
-    const uchar light[4] = {255, 255, 255, 255};
 
     const bool is_current_main_data = filelist_file_get_id(file) != nullptr;
     if (is_current_main_data) {
@@ -989,40 +1058,52 @@ static void file_draw_indicator_icons(const FileList *files,
                        icon_y,
                        ICON_CURRENT_FILE,
                        1.0f / UI_SCALE_FAC,
-                       0.6f,
+                       1.0f,
                        0.0f,
-                       light,
-                       true,
+                       icon_color,
+                       show_icon_border,
                        UI_NO_ICON_OVERLAY_TEXT);
     }
     else if ((file->typeflag & FILE_TYPE_ASSET_ONLINE) != 0) {
-      if (selflag & (FILE_SEL_HIGHLIGHTED | FILE_SEL_SELECTED)) {
-        ui::icon_draw_ex(icon_x,
-                         icon_y,
-                         ICON_INTERNET,
-                         1.0f / UI_SCALE_FAC,
-                         0.6f,
-                         0.0f,
-                         light,
-                         true,
-                         UI_NO_ICON_OVERLAY_TEXT);
-      }
+      ui::icon_draw_ex(icon_x,
+                       icon_y,
+                       ICON_INTERNET,
+                       1.0f / UI_SCALE_FAC,
+                       1.0f,
+                       0.0f,
+                       icon_color,
+                       show_icon_border,
+                       UI_NO_ICON_OVERLAY_TEXT);
+    }
+    else if (file->asset &&
+             file->asset->remote_file_status() == asset_system::RemoteAssetFileStatus::NO_MATCH)
+    {
+      /* This on-disk asset no longer matches the asset listing it was downloaded from. */
+      ui::icon_draw_ex(icon_x,
+                       icon_y,
+                       ICON_STATUS_WARNING_FILLED,
+                       1.0f / UI_SCALE_FAC,
+                       1.0f,
+                       0.0f,
+                       icon_color,
+                       show_icon_border,
+                       UI_NO_ICON_OVERLAY_TEXT);
     }
   }
 }
 
-static void renamebutton_cb(bContext *C, void * /*arg1*/, char *oldname)
+static void renamebutton_cb(bContext &C, StringRefNull oldname)
 {
   char newname[FILE_MAX + 12];
   char orgname[FILE_MAX + 12];
   char filename[FILE_MAX + 12];
-  wmWindowManager *wm = CTX_wm_manager(C);
-  wmWindow *win = CTX_wm_window(C);
-  SpaceFile *sfile = reinterpret_cast<SpaceFile *>(CTX_wm_space_data(C));
-  ARegion *region = CTX_wm_region(C);
+  wmWindowManager *wm = CTX_wm_manager(&C);
+  wmWindow *win = CTX_wm_window(&C);
+  SpaceFile *sfile = reinterpret_cast<SpaceFile *>(CTX_wm_space_data(&C));
+  ARegion *region = CTX_wm_region(&C);
   FileSelectParams *params = ED_fileselect_get_active_params(sfile);
 
-  BLI_path_join(orgname, sizeof(orgname), params->dir, oldname);
+  BLI_path_join(orgname, sizeof(orgname), params->dir, oldname.c_str());
   STRNCPY(filename, params->renamefile);
   BLI_path_make_safe_filename(filename);
   BLI_path_join(newname, sizeof(newname), params->dir, filename);
@@ -1034,7 +1115,7 @@ static void renamebutton_cb(bContext *C, void * /*arg1*/, char *oldname)
           RPT_ERROR, "Could not rename: %s", errno ? strerror(errno) : "unknown error");
       WM_report_banner_show(wm, win);
       /* Renaming failed, reset the name for further renaming handling. */
-      STRNCPY(params->renamefile, oldname);
+      STRNCPY(params->renamefile, oldname.c_str());
     }
     else {
       /* If rename is successful, set renamefile to newly renamed entry.
@@ -1046,7 +1127,7 @@ static void renamebutton_cb(bContext *C, void * /*arg1*/, char *oldname)
     /* Ensure we select and scroll to the renamed file.
      * This is done even if the rename fails as we want to make sure that the file we tried to
      * rename is still selected and in view. (it can move if something added files/folders to the
-     * directory while we were renaming.
+     * directory while we were renaming).
      */
     file_params_invoke_rename_postscroll(wm, win, sfile);
     /* to make sure we show what is on disk */
@@ -1136,18 +1217,14 @@ static void draw_dividers(FileLayout *layout, View2D *v2d)
   }
 }
 
-static void draw_columnheader_background(const FileLayout *layout, const View2D *v2d)
+static void draw_fixed_header_background(const View2D *v2d, const float height)
 {
   uint pos = GPU_vertformat_attr_add(immVertexFormat(), "pos", gpu::VertAttrType::SFLOAT_32_32);
 
   immBindBuiltinProgram(GPU_SHADER_3D_UNIFORM_COLOR);
   immUniformThemeColorShade(TH_BACK, 11);
 
-  immRectf(pos,
-           v2d->cur.xmin,
-           v2d->cur.ymax - layout->attribute_column_header_h,
-           v2d->cur.xmax,
-           v2d->cur.ymax);
+  immRectf(pos, v2d->cur.xmin, v2d->cur.ymax - height, v2d->cur.xmax, v2d->cur.ymax);
 
   immUnbindProgram();
 }
@@ -1370,6 +1447,7 @@ void file_draw_list(const bContext *C, ARegion *region)
   ui::FontStyleAlign align;
   bool do_drag;
   uchar text_col[4];
+  const uiWidgetColors wcol = ui::theme::theme_get()->tui.wcol_list_item;
   const bool draw_columnheader = (params->display == FILE_VERTICALDISPLAY);
   const float thumb_icon_aspect = std::min(64.0f / float(params->thumbnail_size), 4.0f);
 
@@ -1430,8 +1508,6 @@ void file_draw_list(const bContext *C, ARegion *region)
 
   BLF_batch_draw_begin();
 
-  ui::theme::get_color_4ubv(TH_TEXT, text_col);
-
   const bool filelist_loading = !filelist_is_ready(files);
 
   for (i = offset; (i < numfiles) && (i < offset + numfiles_layout); i++) {
@@ -1449,14 +1525,13 @@ void file_draw_list(const bContext *C, ARegion *region)
     char path[FILE_MAX_LIBEXTRA];
     filelist_file_get_full_path(files, file, path);
 
-    if (!(file_selflag & FILE_SEL_EDITING)) {
-      if (file_selflag & (FILE_SEL_HIGHLIGHTED | FILE_SEL_SELECTED)) {
-        int colorid = (file_selflag & FILE_SEL_SELECTED) ? TH_HILITE : TH_BACK;
-        int shade = (file_selflag & FILE_SEL_HIGHLIGHTED) ? 35 : 0;
-        BLI_assert(i == 0 || !FILENAME_IS_CURRPAR(file->relpath));
+    const bool is_selected = file_selflag & FILE_SEL_SELECTED;
+    const bool is_highlighted = file_selflag & FILE_SEL_HIGHLIGHTED;
+    copy_v4_v4_uchar(text_col, is_selected ? wcol.text_sel : wcol.text);
 
-        draw_tile_background(&tile_draw_rect, colorid, shade);
-      }
+    if (!(file_selflag & FILE_SEL_EDITING)) {
+      BLI_assert(i == 0 || !FILENAME_IS_CURRPAR(file->relpath));
+      draw_tile_background(&tile_draw_rect, is_selected, is_highlighted);
     }
     draw_roundbox_corner_set(ui::CNR_NONE);
 
@@ -1470,8 +1545,9 @@ void file_draw_list(const bContext *C, ARegion *region)
         /* Trigger the preview loader to wait until the download is done and load the preview from
          * disk. Has to be done explicitly here because the preview isn't attached to a button. */
         if (!file->asset->is_local_id()) {
-          ui::icon_render_id_ex(
-              C, nullptr, nullptr, ICON_SIZE_PREVIEW, true, file->asset->get_preview());
+          if (PreviewImage *preview = file->asset->get_preview()) {
+            ui::icon_render_id_ex(C, nullptr, nullptr, ICON_SIZE_PREVIEW, true, preview);
+          }
         }
       }
 
@@ -1509,6 +1585,10 @@ void file_draw_list(const bContext *C, ARegion *region)
       if (do_drag) {
         file_add_preview_drag_but(
             sfile, block, layout, file, path, &tile_draw_rect, file_type_icon);
+      }
+
+      if (is_highlighted && file->asset && file->asset->needs_download()) {
+        file_add_asset_download_but(block, layout, file, &tile_draw_rect);
       }
     }
     else {
@@ -1602,8 +1682,7 @@ void file_draw_list(const bContext *C, ARegion *region)
                                  1.0f,
                                  float(sizeof(params->renamefile)),
                                  "");
-      button_retval_set(but, 1);
-      button_func_rename_set(but, renamebutton_cb, file);
+      text_button_func_rename_set(but, renamebutton_cb);
       button_flag_enable(but, ui::BUT_NO_UTF8); /* Allow non UTF8 names. */
       button_flag_disable(but, ui::BUT_UNDO);
       if (false == button_active_only(C, region, block, but)) {
@@ -1639,6 +1718,7 @@ void file_draw_list(const bContext *C, ARegion *region)
       }
     }
 
+    ui::theme::get_color_4ubv(TH_TEXT, text_col);
     if (params->display != FILE_IMGDISPLAY) {
       draw_details_columns(params, layout, file, &tile_draw_rect, text_col);
     }
@@ -1687,7 +1767,7 @@ void file_draw_list(const bContext *C, ARegion *region)
 
   /* Draw last, on top of file list. */
   if (draw_columnheader) {
-    draw_columnheader_background(layout, v2d);
+    draw_fixed_header_background(v2d, layout->attribute_column_header_h);
     draw_columnheader_columns(params, layout, v2d, text_col);
   }
 
@@ -1695,6 +1775,34 @@ void file_draw_list(const bContext *C, ARegion *region)
     /* Only save current size if there is something to show. */
     layout->curr_size = layout->width;
   }
+}
+
+void file_draw_banner(const bContext *C, const SpaceFile *sfile, ARegion *region)
+{
+  /* Passed into lambda as block ID-name. */
+  static const char *funcname = __func__;
+
+  file_banners_for_first_visible(*sfile, [&](const BannerType &banner) {
+    draw_fixed_header_background(&region->v2d, sfile->layout->offset_top);
+
+    ui::Block *block = block_begin(C, region, funcname, ui::EmbossType::Emboss);
+    ui::Layout &layout = ui::block_layout(
+        block,
+        ui::LayoutDirection::Vertical,
+        ui::LayoutType::Panel,
+        sfile->layout->tile_border_x,
+        -sfile->layout->tile_border_y + region->v2d.cur.ymax,
+        std::max(0, region->winx - 2 * sfile->layout->tile_border_x),
+        0,
+        0,
+        ui::style_get_dpi());
+
+    banner.layout(*sfile, layout.row(false));
+
+    block_layout_resolve(block);
+    block_end(C, block);
+    block_draw(C, block);
+  });
 }
 
 static void file_draw_invalid_asset_library_hint(const bContext *C,
@@ -1729,7 +1837,7 @@ static void file_draw_invalid_asset_library_hint(const bContext *C,
   sy -= line_height * 2.2f;
 
   {
-    ui::icon_draw(sx, sy - UI_UNIT_Y, ICON_INFO);
+    ui::icon_draw(sx, sy - UI_UNIT_Y, ICON_STATUS_INFO);
 
     const char *suggestion = RPT_(
         "Asset Libraries are local directories that can contain .blend files with assets inside.\n"
@@ -1926,7 +2034,7 @@ static void file_draw_asset_library_remote_loading_failed_hint(const bContext *C
   {
     uiDefIconTextBut(block,
                      ui::ButtonType::Label,
-                     ICON_CANCEL,
+                     ICON_STATUS_ERROR_FILLED,
                      "Asset Library Download Failed",
                      sx,
                      sy - heading_height,
@@ -1984,9 +2092,9 @@ static void file_draw_invalid_library_hint(const bContext * /*C*/,
       continue;
     }
 
-    int icon = ICON_INFO;
+    int icon = ICON_STATUS_INFO;
     if (report_type > RPT_WARNING) {
-      icon = ICON_ERROR;
+      icon = ICON_STATUS_WARNING_FILLED;
     }
     ui::icon_draw(sx, sy - UI_UNIT_Y, icon);
 
@@ -2043,6 +2151,13 @@ bool file_draw_hint_if_invalid(const bContext *C, const SpaceFile *sfile, ARegio
     const bool is_remote_library = remote_library != nullptr;
 
     if (is_remote_library) {
+      /* With remote libraries, there may be already-downloaded assets available that should be
+       * displayed. Don't show the "internet access required" hint until done loading, and only if
+       * there are no already-downloaded assets to display. */
+      if (!filelist_is_ready(sfile->files) || !filelist_files_num_entries(sfile->files)) {
+        return false;
+      }
+
       const bool is_online_allowed = G.f & G_FLAG_INTERNET_ALLOW;
       const bool was_choice_made = U.extension_flag & USER_EXTENSION_FLAG_ONLINE_ACCESS_HANDLED;
       if (!is_online_allowed && !was_choice_made) {

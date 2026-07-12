@@ -20,6 +20,8 @@ BLOCKLIST_ALL = [
     "hair_instancer_uv.blend",
     "principled_hair_directcoloring.blend",
     "visibility_particles.blend",
+    # High noise variance between platforms
+    "many_lights.blend",
     # Tests for EEVEE-only setting (duplicates from the Cycles perspective)
     "raytrace_backface_on.blend",
     "raytrace_backface_off.blend",
@@ -28,7 +30,8 @@ BLOCKLIST_ALL = [
     "shadow_min_pool_size.blend",
     "shadow_resolution_scale.blend",
     "shader_to_rgb_transparent.blend",
-    "subsurface_shader_to_rgb.blend"
+    "subsurface_shader_to_rgb.blend",
+    "lightprobe_planar.blend"
 ]
 
 # Blocklist for device + build configuration that does not support OSL at all.
@@ -77,6 +80,7 @@ BLOCKLIST_OPTIX_OSL_ALL = BLOCKLIST_OPTIX_OSL_LIMITED + [
     'ambient_occlusion.*.blend',
     'bake_bevel.blend',
     'bevel.blend',
+    'osl_camera_bevel.blend',
     'raycast.*.blend',
     'principled_bsdf_bevel_emission_137420.blend',
     # Dicing tests use wireframe node which doesn't appear to be supported with OptiX OSL
@@ -107,10 +111,17 @@ if platform.system() == "Darwin":
             "underwater_caustics.blend",
         ]
 
-BLOCKLIST_HIP = [
-    # MNEE does not work properly on RDNA2 GPUs.
-    'underwater_caustics.blend',
+
+BLOCKLIST_HIPRT = [
+    # Light leaking fireflies due to HIP-RT intersection precision issue.
+    "normal_mapping_light_leak.blend",
 ]
+
+BLOCKLIST_HIP_NORT = [
+    # MNEE not supported on HIP without HIP-RT
+    "underwater_caustics.blend",
+]
+
 
 BLOCKLIST_GPU = [
     # Uninvestigated differences with GPU.
@@ -191,6 +202,7 @@ def get_arguments(filepath, output_filepath, use_hwrt, osl, extra_args):
         "--enable-autoexec",
         "--debug-memory",
         "--debug-exit-on-error",
+        "--console-crash-handler",
         filepath,
         "-E", "CYCLES",
         "-o", output_filepath,
@@ -221,12 +233,18 @@ def get_arguments(filepath, output_filepath, use_hwrt, osl, extra_args):
     if osl:
         args.extend(["--python-expr", "import bpy; bpy.context.scene.cycles.shading_system = True"])
 
+        # Workaround for #152968, issue with OSL and Vulkan on Windows.
+        if sys.platform == "win32":
+            args.extend(["--gpu-backend", "opengl"])
+
     args.extend(extra_args)
 
-    if subject == 'bake':
+    if subject.startswith('bake'):
         args.extend(['--python', os.path.join(basedir, "util", "render_bake.py")])
     elif subject == 'denoise_animation':
         args.extend(['--python', os.path.join(basedir, "util", "render_denoise.py")])
+    elif subject == 'updates':
+        args.extend(['--python', os.path.join(basedir, "util", "render_updates.py")])
     else:
         args.extend(["-f", "1"])
 
@@ -303,8 +321,10 @@ def main():
         blocklist += BLOCKLIST_METAL
         blocklist += BLOCKLIST_METAL_RT
 
-    if device in ('HIP', 'HIP-RT'):
-        blocklist += BLOCKLIST_HIP
+    if device == 'HIP':
+        blocklist += BLOCKLIST_HIP_NORT
+    if device == 'HIP-RT':
+        blocklist += BLOCKLIST_HIPRT
 
     test_dir_name = Path(args.testdir).name
     report = CyclesReport('Cycles', test_dir_name, args.outdir, args.oiiotool, device, blocklist, args.osl == 'all')

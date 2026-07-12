@@ -6,9 +6,8 @@
 #include <sstream>
 #include <string>
 
-#include "BLI_math_bits.h"
+#include "BLI_math_bits.hh"
 
-#include "gpu_shader_dependency_private.hh"
 #include "mtl_backend.hh"
 #include "mtl_shader_generate.hh"
 
@@ -458,7 +457,7 @@ static const char *to_string(const Interpolation &interp)
 #if 0
 #  define LINE ""
 #else
-#  define LINE "\n#line " STRINGIFY(__LINE__) " \"" __FILE__ "\"\n"
+#  define LINE "\n#line " STRINGIFY(__LINE__) "\n"
 #endif
 
 std::string wrap_type(StringRefNull type_name, const ShaderStage stage)
@@ -743,6 +742,9 @@ static void generate_resource(GeneratedStreams &generated,
                       MTL_SSBO_SLOT_OFFSET + res.slot,
                       stage);
       break;
+    case ShaderCreateInfo::Resource::BindType::ACCELERATION_STRUCTURE:
+      BLI_assert_unreachable();
+      break;
   }
 }
 
@@ -997,7 +999,6 @@ static void generate_vertex_out(GeneratedStreams &generated,
                                 const ShaderStage stage)
 {
   std::string out_class_local = get_stage_out_class_name(ShaderStage::VERTEX, info);
-  std::string out_class = get_stage_class_name(ShaderStage::VERTEX) + ("::" + out_class_local);
 
   StringRefNull const_qual = (stage == ShaderStage::FRAGMENT) ? "const " : "";
   StringRefNull mem_scope = "thread ";
@@ -1187,7 +1188,6 @@ static void generate_fragment_out(GeneratedStreams &generated, const ShaderCreat
 {
   constexpr ShaderStage stage = ShaderStage::FRAGMENT;
   StringRefNull out_class_local = get_stage_out_class_name(stage, info);
-  std::string out_class = get_stage_class_name(stage) + ("::" + out_class_local);
 
   std::string builtins_decl = generate_fragment_builtins(generated, info);
 
@@ -1373,6 +1373,8 @@ std::pair<std::string, std::string> generate_entry_point(const ShaderCreateInfo 
   generate_resources(generated, stage, info);
 
   std::stringstream prefix;
+  /* Note: The shader log class expect a `#line 1 "filename"` For correct filename. */
+  prefix << "#line 1 \"" __FILE__ "\"\n";
   prefix << LINE;
   prefix << generated.wrapper_class_prefix.str() << "\n\n";
   prefix << "struct " << stage_class_name << " {\n";
@@ -1464,6 +1466,9 @@ uint32_t available_buffer_slots(const ShaderCreateInfo &info)
       case ShaderCreateInfo::Resource::BindType::SAMPLER:
       case ShaderCreateInfo::Resource::BindType::IMAGE:
         break;
+      case ShaderCreateInfo::Resource::BindType::ACCELERATION_STRUCTURE:
+        BLI_assert_unreachable();
+        break;
     };
   };
 
@@ -1526,6 +1531,9 @@ void patch_create_info_atomic_workaround(std::unique_ptr<PatchedShaderCreateInfo
         break;
       case ShaderCreateInfo::Resource::BindType::UNIFORM_BUFFER:
       case ShaderCreateInfo::Resource::BindType::STORAGE_BUFFER:
+        break;
+      case ShaderCreateInfo::Resource::BindType::ACCELERATION_STRUCTURE:
+        BLI_assert_unreachable();
         break;
     }
   };

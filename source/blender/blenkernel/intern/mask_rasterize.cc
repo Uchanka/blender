@@ -60,22 +60,22 @@
 
 #include "BLI_array.hh"
 #include "BLI_delaunay_2d.hh"
-#include "BLI_math_geom.h"
-#include "BLI_math_vector.h"
+#include "BLI_math_geom_c.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_math_vector_types.hh"
-#include "BLI_memarena.h"
-#include "BLI_scanfill.h"
-#include "BLI_utildefines.h"
+#include "BLI_memarena.hh"
+#include "BLI_scanfill.hh"
+#include "BLI_utildefines.hh"
 #include "BLI_vector.hh"
 
-#include "BLI_linklist.h"
-#include "BLI_listbase.h"
-#include "BLI_rect.h"
-#include "BLI_task.h"
+#include "BLI_linklist.hh"
+#include "BLI_listbase.hh"
+#include "BLI_rect.hh"
+#include "BLI_task_c.hh"
 
 #include "BKE_mask.hh"
 
-#include "BLI_strict_flags.h" /* IWYU pragma: keep. Keep last. */
+#include "BLI_strict_flags.hh" /* IWYU pragma: keep. Keep last. */
 
 namespace blender {
 
@@ -722,7 +722,7 @@ static void maskrasterize_layer_init_scanfill(MaskRasterHandle *mr_handle,
   uint tot_boundary_found = 0;
 #endif
 
-  tot_splines = uint(BLI_listbase_count(&masklay->splines));
+  tot_splines = uint(masklay->splines.count());
   open_spline_ranges = MEM_new_array<MaskRasterSplineInfo>(tot_splines, __func__);
 
   BLI_scanfill_begin_arena(&sf_ctx, sf_arena);
@@ -1050,7 +1050,7 @@ static void maskrasterize_layer_init_scanfill(MaskRasterHandle *mr_handle,
     if ((masklay->flag & MASK_LAYERFLAG_FILL_OVERLAP) &&
         (is_isect = BLI_scanfill_calc_self_isect(&sf_ctx, &isect_remvertbase, &isect_remedgebase)))
     {
-      uint sf_vert_tot_isect = uint(BLI_listbase_count(&sf_ctx.fillvertbase));
+      uint sf_vert_tot_isect = uint(sf_ctx.fillvertbase.count());
       uint i = vert_num;
 
       face_coords = static_cast<float (*)[3]>(MEM_realloc_uninitialized(
@@ -1249,12 +1249,13 @@ static void maskrasterize_layer_init_cdt(MaskRasterHandle *mr_handle,
 
   uint tot_feather_quads = 0;
 
-  tot_splines = uint(BLI_listbase_count(&masklay->splines));
+  tot_splines = uint(masklay->splines.count());
   open_spline_ranges = MEM_new_array<MaskRasterSplineInfo>(tot_splines, __func__);
 
   /* CDT input buffers. */
   Vector<double2> cdt_verts;
-  Vector<Vector<int>> cdt_faces;
+  Vector<int> cdt_face_offsets;
+  Vector<int> cdt_face_vert_indices;
   Vector<float2> feather_coords;
   Vector<FeatherRange> feather_ranges;
 
@@ -1353,9 +1354,10 @@ static void maskrasterize_layer_init_cdt(MaskRasterHandle *mr_handle,
 
         /* Polygon for CDT. */
         const int poly_num = int(tot_diff_point);
-        Vector<int> poly(poly_num);
-        std::iota(poly.begin(), poly.end(), spline_vert_start);
-        cdt_faces.append(std::move(poly));
+        cdt_face_offsets.append(int(cdt_face_vert_indices.size()));
+        for (const int64_t i : IndexRange(int64_t(poly_num))) {
+          cdt_face_vert_indices.append(int(spline_vert_start + i));
+        }
 
         /* Feather: only when feather points exist. */
         if (diff_feather_points) {
@@ -1499,6 +1501,8 @@ static void maskrasterize_layer_init_cdt(MaskRasterHandle *mr_handle,
     }
   }
 
+  cdt_face_offsets.append(int(cdt_face_vert_indices.size()));
+
   /* CDT filling call (if there is anything to fill). */
 
   uint cdt_tri_num = 0;
@@ -1508,12 +1512,13 @@ static void maskrasterize_layer_init_cdt(MaskRasterHandle *mr_handle,
 
   meshintersect::CDT_result<double> result;
 
-  if (!cdt_faces.is_empty()) {
+  if (!cdt_face_vert_indices.is_empty()) {
     const bool has_feather = !feather_ranges.is_empty();
 
     meshintersect::CDT_input<double> cdt_in;
     cdt_in.vert = Array<double2>(cdt_verts.as_span());
-    cdt_in.face = Array<Vector<int>>(cdt_faces.as_span());
+    cdt_in.face_offsets = cdt_face_offsets.as_span();
+    cdt_in.face_vert_indices = cdt_face_vert_indices.as_span();
     cdt_in.epsilon = 1e-8;
     cdt_in.need_ids = has_feather;
 
@@ -1666,7 +1671,7 @@ void BKE_maskrasterize_handle_init(MaskRasterHandle *mr_handle,
       (do_aspect_correct && width > height) ? float(height) / float(width) : 1.0f,
       (do_aspect_correct && width < height) ? float(width) / float(height) : 1.0f};
 
-  mr_handle->layers_tot = uint(BLI_listbase_count(&mask->masklayers));
+  mr_handle->layers_tot = uint(mask->masklayers.count());
   mr_handle->layers = MEM_new_array<MaskRasterLayer>(mr_handle->layers_tot, "MaskRasterLayer");
   BLI_rctf_init_minmax(&mr_handle->bounds);
 

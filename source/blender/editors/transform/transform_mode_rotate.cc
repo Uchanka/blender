@@ -9,9 +9,9 @@
 #include <cstdlib>
 #include <optional>
 
-#include "BLI_math_matrix.h"
-#include "BLI_math_rotation.h"
-#include "BLI_math_vector.h"
+#include "BLI_math_matrix_c.hh"
+#include "BLI_math_rotation_c.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_task.hh"
 
 #include "BKE_context.hh"
@@ -398,7 +398,7 @@ static void initRotation(TransInfo *t, wmOperator * /*op*/)
 
   if (transform_mode_affect_only_locations(t)) {
     WorkspaceStatus status(t->context);
-    status.item(TIP_("Transform is set to only affect location"), ICON_ERROR);
+    status.item(TIP_("Transform is set to only affect location"), ICON_STATUS_WARNING_FILLED);
     initMouseInputMode(t, &t->mouse, INPUT_ERROR_DASH);
   }
   else {

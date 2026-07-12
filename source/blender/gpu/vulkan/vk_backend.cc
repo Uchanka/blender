@@ -11,8 +11,8 @@
 #include <sstream>
 
 #include "BLI_path_utils.hh"
-#include "BLI_string.h"
-#include "BLI_threads.h"
+#include "BLI_string.hh"
+#include "BLI_threads.hh"
 
 #include "CLG_log.h"
 
@@ -28,6 +28,7 @@
 #include "vk_index_buffer.hh"
 #include "vk_pixel_buffer.hh"
 #include "vk_query.hh"
+#include "vk_ray_tracing.hh"
 #include "vk_shader.hh"
 #include "vk_state_manager.hh"
 #include "vk_storage_buffer.hh"
@@ -251,6 +252,15 @@ static bool vk_instance_create_for_platform_checks(VkInstance *r_instance)
 {
   vk_restrict_loader_layers();
 
+  VkResult vk_result = volkInitialize();
+  if (vk_result != VK_SUCCESS) {
+    CLOG_ERROR(&LOG,
+               "Error initializing Vulkan loader: VkResult=%d, most likely cannot find the Vulkan "
+               "Loader provided by GPU driver/OS.",
+               vk_result);
+    return false;
+  }
+
   /* Initialize an vulkan 1.2 instance. */
   VkApplicationInfo vk_application_info = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
   vk_application_info.pApplicationName = "Blender";
@@ -274,9 +284,10 @@ bool VKBackend::is_supported()
 
   VkInstance vk_instance = VK_NULL_HANDLE;
   if (!vk_instance_create_for_platform_checks(&vk_instance)) {
-    CLOG_ERROR(&LOG, "Unable to initialize a Vulkan 1.2 instance.");
+    CLOG_WARN(&LOG, "Unable to initialize a Vulkan 1.2 instance.");
     return false;
   }
+  volkLoadInstanceOnly(vk_instance);
 
   /* Go over all the devices. */
   uint32_t physical_devices_count = 0;
@@ -524,6 +535,7 @@ void VKBackend::detect_workarounds(VKDevice &device)
     extensions.wide_lines = false;
     extensions.line_rasterization = false;
     extensions.extended_dynamic_state = false;
+    GCaps.ray_query_support = false;
     GCaps.stencil_export_support = false;
     GCaps.texture_pool_workaround = true;
 
@@ -627,30 +639,32 @@ void VKBackend::detect_workarounds(VKDevice &device)
   }
 
 #ifdef _WIN32
-  /* Intel 7th to 10th Gen Processor iGPUs show a black screen at application startup when using
-   * VK_EXT_vertex_input_dynamic_state. Furthermore, texture pool usage leads to visual artifacts.
-   * The used driver version for these iGPUs is 101.2xxx or older.
-   *
-   * See #147721
-   */
   if (GPU_type_matches(GPU_DEVICE_INTEL | GPU_DEVICE_INTEL_UHD, GPU_OS_WIN, GPU_DRIVER_OFFICIAL)) {
-    const uint32_t driver_version = device.physical_device_properties_get().driverVersion;
-    uint32_t driver_version_major = driver_version >> 14u;
-    uint32_t driver_version_minor = driver_version & 0x3fffu;
-    if (driver_version_major < 101 || (driver_version_major == 101 && driver_version_minor < 3000))
-    {
+    GPUIntelGpuArch gpu_arch = GPU_platform_get_intel_arch(
+        device.physical_device_properties_get().deviceID);
+
+    /* Intel Gen9 iGPUs (Intel 7th to 10th Gen Processor Graphics driver) show a black screen at
+     * application startup when using VK_EXT_vertex_input_dynamic_state.
+     *
+     * See #147721
+     */
+    if (gpu_arch == GPUIntelGpuArch::Gen9AndOlder) {
       extensions.vertex_input_dynamic_state = false;
+    }
+
+    /* Using the texture pool causes varying issues on older Intel iGPUs.
+     * Note: Gen12 iGPUs are partly covered by the Intel 11th to 14th Gen Processor Graphics driver
+     * and the Intel Arc Graphics driver (the latter handles Arrow Lake and Meteor Lake).
+     * - Visual corruptions can be seen on Gen9 and older iGPUs (Intel 7th to 10th Gen Processor
+     * Graphics driver; #147721).
+     * - When using the image cache, visual artifacts can be seen on Gen11 and Gen12 iGPUs
+     * (#156496) and Gen12 dGPUs (#160002).
+     * - When using the texture pool without the image cache, memory leaks happen on Gen11 and
+     * Gen12 GPUs (#157777).
+     */
+    if (gpu_arch <= GPUIntelGpuArch::Gen12) {
       GCaps.texture_pool_workaround = true;
     }
-  }
-
-  /* Using the texture pool causes issues on Intel Meteor/Arrow/Alder Lake and older iGPUs.
-   * - When using the image cache, visual artifacts can be seen (#156496).
-   * - When using the texture pool without the image cache, memory leaks happen (#157777).
-   * Until the issues have been resolved, the texture pool workaround is used.
-   */
-  if (GPU_type_matches(GPU_DEVICE_INTEL | GPU_DEVICE_INTEL_UHD, GPU_OS_WIN, GPU_DRIVER_OFFICIAL)) {
-    GCaps.texture_pool_workaround = true;
   }
 #endif
 
@@ -702,19 +716,13 @@ void VKBackend::compute_dispatch_indirect(StorageBuf *indirect_buf)
   render_graph::VKResourceAccessInfo &resources = context.reset_and_get_access_info();
   render_graph::VKDispatchIndirectNode::CreateInfo dispatch_indirect_info(resources);
   context.update_pipeline_data(dispatch_indirect_info.dispatch_indirect_node.pipeline_data);
-  dispatch_indirect_info.dispatch_indirect_node.buffer = indirect_buffer.vk_handle();
+  dispatch_indirect_info.dispatch_indirect_node.buffer = indirect_buffer.resource();
   dispatch_indirect_info.dispatch_indirect_node.offset = 0;
   context.render_graph().add_node(dispatch_indirect_info);
 }
 
 Context *VKBackend::context_alloc(GHOST_IWindow *ghost_window, GHOST_IContext *ghost_context)
 {
-  if (ghost_window) {
-    BLI_assert(ghost_context == nullptr);
-    ghost_context = ghost_window->getDrawingContext();
-  }
-
-  BLI_assert(ghost_context != nullptr);
   if (!device.is_initialized()) {
     device.init(ghost_context);
     device.extensions_get().log();
@@ -798,6 +806,15 @@ VertBuf *VKBackend::vertbuf_alloc()
   return new VKVertexBuffer();
 }
 
+TopLevelAS *VKBackend::tlas_alloc(const char *name)
+{
+  return new VKTopLevelAS(name);
+}
+BottomLevelAS *VKBackend::blas_alloc(const char *name)
+{
+  return new VKBottomLevelAS(name);
+}
+
 void VKBackend::render_begin()
 {
   VKThreadData &thread_data = device.current_thread_data();
@@ -851,6 +868,11 @@ void VKBackend::capabilities_init(VKDevice &device)
   GCaps.geometry_shader_support = true;
   GCaps.stencil_export_support = device.supports_extension(
       VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
+  GCaps.ray_query_support =
+      device.supports_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+      device.physical_device_acceleration_structure_properties_get().maxGeometryCount > 0 &&
+      device.physical_device_acceleration_structure_properties_get().maxPrimitiveCount > 0 &&
+      device.physical_device_acceleration_structure_properties_get().maxInstanceCount > 0;
 
   GCaps.max_texture_size = max_ii(limits.maxImageDimension1D, limits.maxImageDimension2D);
   GCaps.max_texture_3d_size = min_uu(limits.maxImageDimension3D, INT_MAX);

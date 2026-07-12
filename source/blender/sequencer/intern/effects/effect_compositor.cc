@@ -6,6 +6,7 @@
  * \ingroup sequencer
  */
 
+#include "BKE_compositor.hh"
 #include "BKE_node_runtime.hh"
 
 #include "COM_domain.hh"
@@ -16,6 +17,8 @@
 
 #include "IMB_colormanagement.hh"
 #include "IMB_imbuf.hh"
+
+#include "PRF_profile.hh"
 
 #include "SEQ_sequencer.hh"
 
@@ -33,6 +36,9 @@ class CompositorEffectContext : public CompositorContext {
   ImBuf *output_;
   float factor_;
 
+  /* The hash of the active compute context. */
+  const ComputeContextHash active_compute_context_hash_;
+
  public:
   CompositorEffectContext(compositor::StaticCacheManager &cache_manager,
                           const RenderData &render_data,
@@ -47,8 +53,15 @@ class CompositorEffectContext : public CompositorContext {
         input_1_(input_1),
         input_2_(input_2),
         output_(output),
-        factor_(factor)
+        factor_(factor),
+        active_compute_context_hash_(bke::compositor::compute_active_compute_context_hash(
+            *render_data_.scene, *node_group_))
   {
+  }
+
+  const ComputeContextHash &get_active_compute_context_hash() const override
+  {
+    return active_compute_context_hash_;
   }
 
   compositor::Domain get_compositing_domain() const override
@@ -56,11 +69,9 @@ class CompositorEffectContext : public CompositorContext {
     return compositor::Domain(int2(this->output_->x, this->output_->y));
   }
 
-  void write_viewer(compositor::Result &result) override
+  void write_viewer(compositor::Result &viewer_result) override
   {
-    /* Within compositor effect, output and viewer output function the same. */
-    this->write_output(result, *this->output_);
-    viewer_was_written_ = true;
+    write_viewer_impl(viewer_result, *this->output_);
   }
 
   void evaluate()
@@ -69,13 +80,8 @@ class CompositorEffectContext : public CompositorContext {
     const bNodeTree &node_group = *DEG_get_evaluated<bNodeTree>(render_data_.depsgraph,
                                                                 node_group_);
     const bke::DataBlockComputeContext compute_context(nullptr, this->get_scene().id);
-    NodeGroupOperation node_group_operation(*this,
-                                            node_group,
-                                            this->needed_outputs(),
-                                            nullptr,
-                                            node_group.active_viewer_key,
-                                            bke::NODE_INSTANCE_KEY_BASE,
-                                            compute_context);
+    NodeGroupOperation node_group_operation(
+        *this, node_group, this->needed_outputs(), compute_context);
     set_output_refcount(node_group, node_group_operation);
 
     /* Map the inputs to the operation. */
@@ -119,28 +125,38 @@ class CompositorEffectContext : public CompositorContext {
   }
 };
 
-static ImBuf *do_compositor_effect(const RenderData *context,
-                                   SeqRenderState * /*state*/,
-                                   Strip *strip,
-                                   float /*timeline_frame*/,
-                                   float fac,
-                                   ImBuf *src1,
-                                   ImBuf *src2)
+static SeqResult do_compositor_effect(const RenderData *context,
+                                      SeqRenderState * /*state*/,
+                                      Strip *strip,
+                                      float /*timeline_frame*/,
+                                      float fac,
+                                      const SeqResult &src1,
+                                      const SeqResult &src2)
 {
+  PRF_scope_with_name("SeqFxCompositor", ProfileCategory::Draw);
   const int x = context->rectx;
   const int y = context->recty;
-  ImBuf *out = IMB_allocImBuf(x, y, IB_float_data | IB_uninitialized_pixels);
+  SeqResult out;
+  out.image = IMB_allocImBuf(x, y, ImBufFlags::FloatData | ImBufFlags::UninitializedPixels);
   IMB_colormanagement_assign_float_colorspace(
-      out, IMB_colormanagement_role_colorspace_name_get(COLOR_ROLE_SCENE_LINEAR));
+      out.image, IMB_colormanagement_role_colorspace_name_get(COLOR_ROLE_SCENE_LINEAR));
 
   CompositorEffectVars *data = static_cast<CompositorEffectVars *>(strip->effectdata);
   if (!data || !data->node_group) {
-    IMB_rectfill(out, float4(0, 0, 0, 1));
+    IMB_rectfill(out.image, float4(0, 0, 0, 1));
+    out.image->color_mode = ImColorMode::RGB;
+    out.is_opaque_before_transform = true;
   }
   else {
     CompositorCache &com_cache = context->scene->ed->runtime->ensure_compositor_cache();
-    CompositorEffectContext com_context(
-        com_cache.get_cache_manager(), *context, data->node_group, src1, src2, out, fac, *strip);
+    CompositorEffectContext com_context(com_cache.get_cache_manager(),
+                                        *context,
+                                        data->node_group,
+                                        src1.image,
+                                        src2.image,
+                                        out.image,
+                                        fac,
+                                        *strip);
 
     if (com_context.use_gpu()) {
       com_context.set_gpu_supported(render_begin_gpu(*context));
@@ -152,6 +168,8 @@ static ImBuf *do_compositor_effect(const RenderData *context,
     if (com_context.use_gpu()) {
       render_end_gpu(*context);
     }
+    out.translation += com_context.get_result_translation();
+    out.is_opaque_before_transform = !out.image->can_contain_alpha();
   }
   return out;
 }

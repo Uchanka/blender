@@ -12,23 +12,32 @@
 
 #include "DNA_ID.h"
 #include "DNA_brush_types.h"
+#include "DNA_camera_types.h"
 #include "DNA_curve_types.h"
+#include "DNA_mesh_types.h"
 #include "DNA_modifier_types.h"
 #include "DNA_node_tree_interface_types.h"
 #include "DNA_node_types.h"
 #include "DNA_scene_types.h"
 #include "DNA_screen_types.h"
+#include "DNA_windowmanager_types.h"
+#include "DNA_xr_types.h"
 
 #include "BLI_listbase_iterator.hh"
-#include "BLI_string.h"
+#include "BLI_string.hh"
+#include "BLI_string_utf8.hh"
 #include "BLI_string_utils.hh"
-#include "BLI_sys_types.h"
+#include "BLI_sys_types.hh"
 
-#include "BKE_animsys.h"
+#include "BKE_anim_visualization.h"
+#include "BKE_animsys.hh"
+#include "BKE_attribute.hh"
 #include "BKE_colortools.hh"
 #include "BKE_curves.hh"
 #include "BKE_idprop.hh"
+#include "BKE_layer.hh"
 #include "BKE_lib_id.hh"
+#include "BKE_lib_override.hh"
 #include "BKE_main.hh"
 #include "BKE_mesh_legacy_convert.hh"
 #include "BKE_node.hh"
@@ -36,6 +45,7 @@
 #include "BKE_node_runtime.hh"
 #include "BKE_report.hh"
 
+#include "SEQ_effects.hh"
 #include "SEQ_iterator.hh"
 #include "SEQ_sequencer.hh"
 
@@ -116,7 +126,8 @@ static void version_geometry_nodes_properties(FileData &fd,
       IDP_AddToGroup(
           group, bke::idprop::create("type", int(nodes::GeometryNodesInputType::Layer)).release());
       const StringRefNull layer_name = [&]() {
-        const IDProperty *layer_name = IDP_GetPropertyFromGroup(old_props, identifier);
+        const IDProperty *layer_name = IDP_GetPropertyTypeFromGroup(
+            old_props, identifier, IDP_STRING);
         if (layer_name) {
           return StringRefNull(IDP_string_get(layer_name));
         }
@@ -165,7 +176,7 @@ static void version_geometry_nodes_properties(FileData &fd,
       if (use_attribute_prop->type == IDP_INT) {
         use_attribute = bool(IDP_int_get(use_attribute_prop));
       }
-      else {
+      else if (use_attribute_prop->type == IDP_BOOLEAN) {
         use_attribute = bool(IDP_bool_get(use_attribute_prop));
       }
     }
@@ -174,8 +185,8 @@ static void version_geometry_nodes_properties(FileData &fd,
                                             nodes::GeometryNodesInputType::Value;
     IDP_AddToGroup(group, bke::idprop::create("type", int(input_type)).release());
     const StringRefNull attribute_name = [&]() {
-      const IDProperty *attribute_name = IDP_GetPropertyFromGroup(old_props,
-                                                                  identifier + "_attribute_name");
+      const IDProperty *attribute_name = IDP_GetPropertyTypeFromGroup(
+          old_props, identifier + "_attribute_name", IDP_STRING);
       if (attribute_name) {
         return StringRefNull(IDP_string_get(attribute_name));
       }
@@ -188,8 +199,8 @@ static void version_geometry_nodes_properties(FileData &fd,
   IDP_AddToGroup(system_props, outputs);
   for (const bNodeTreeInterfaceSocket *output : ntree.interface_outputs()) {
     const StringRef identifier = output->identifier;
-    IDProperty *old_name_prop = IDP_GetPropertyFromGroup(old_props,
-                                                         identifier + "_attribute_name");
+    IDProperty *old_name_prop = IDP_GetPropertyTypeFromGroup(
+        old_props, identifier + "_attribute_name", IDP_STRING);
     if (!old_name_prop) {
       continue;
     }
@@ -213,13 +224,15 @@ static void sanitize_node_tree_interface_socket_identifiers(bNodeTree &node_tree
 {
   node_tree.ensure_interface_cache();
   Set<StringRef> all_identifiers;
+  Map<std::string, StringRefNull> identifier_map;
   for (bNodeTreeInterfaceItem *item : node_tree.interface_items()) {
-    if (item->item_type == NODE_INTERFACE_PANEL) {
+    if (item->item_type == NodeTreeInterfaceItemType::Panel) {
       continue;
     }
     auto &socket = *bke::node_interface::get_item_as<bNodeTreeInterfaceSocket>(item);
     /* Socket identifiers are required to be valid RNA identifiers and unique. */
     if (!RNA_validate_identifier(socket.identifier, true)) {
+      std::string prev_identifier(socket.identifier);
       RNA_identifier_sanitize(socket.identifier, true);
       if (all_identifiers.contains(socket.identifier)) {
         std::string new_identifier = BLI_uniquename_cb(
@@ -229,8 +242,24 @@ static void sanitize_node_tree_interface_socket_identifiers(bNodeTree &node_tree
         MEM_SAFE_DELETE(socket.identifier);
         socket.identifier = BLI_strdup(new_identifier.c_str());
       }
+      identifier_map.add(std::move(prev_identifier), socket.identifier);
     }
     all_identifiers.add(socket.identifier);
+  }
+
+  /* Rename all the node socket identifiers that got changed in the interface. */
+  if (!identifier_map.is_empty()) {
+    for (bNode &node : node_tree.nodes) {
+      if (!(node.is_group_input() || node.is_group_output())) {
+        continue;
+      }
+      ListBaseT<bNodeSocket> sockets = node.is_group_output() ? node.inputs : node.outputs;
+      for (bNodeSocket &socket : sockets) {
+        if (identifier_map.contains(socket.identifier)) {
+          version_node_socket_identifier_set(socket, identifier_map.lookup(socket.identifier));
+        }
+      }
+    }
   }
 }
 
@@ -266,6 +295,61 @@ static void version_clear_strip_linear_modifier_flag(Main &bmain)
         return true;
       });
     }
+  }
+}
+
+static void version_text_strip_space_line(Main &bmain)
+{
+  for (Scene &scene : bmain.scenes) {
+    Editing *ed = seq::editing_get(&scene);
+    if (ed == nullptr) {
+      continue;
+    }
+
+    seq::foreach_strip(&ed->seqbase, [&](Strip *strip) {
+      if (strip->type == STRIP_TYPE_TEXT && strip->effectdata != nullptr) {
+        TextVars *data = static_cast<TextVars *>(strip->effectdata);
+        data->space_line = 1.0f;
+      }
+      return true;
+    });
+  }
+}
+
+static void version_compositor_effect_initialized(Main &bmain)
+{
+  /* A file with compositor effects that was saved, opened in
+   * previous version and saved there, would have lost the
+   * compositor effect data since earlier versions would not
+   * write it. Ensure the effect data is not null. */
+  for (Scene &scene : bmain.scenes) {
+    if (scene.ed) {
+      seq::foreach_strip(&scene.ed->seqbase, [&](Strip *strip) {
+        if (strip->type == STRIP_TYPE_COMPOSITOR) {
+          seq::effect_ensure_initialized(strip);
+        }
+        return true;
+      });
+    }
+  }
+}
+
+static void version_text_strip_abs_space_line(Main &bmain)
+{
+  for (Scene &scene : bmain.scenes) {
+    Editing *ed = seq::editing_get(&scene);
+    if (ed == nullptr) {
+      continue;
+    }
+
+    seq::foreach_strip(&ed->seqbase, [&](Strip *strip) {
+      if (strip->type == STRIP_TYPE_TEXT && strip->effectdata != nullptr) {
+        TextVars *data = static_cast<TextVars *>(strip->effectdata);
+        data->abs_space_line = 60.0f;
+        data->flag &= ~SEQ_TEXT_USE_ABSOLUTE_LINE_SPACING;
+      }
+      return true;
+    });
   }
 }
 
@@ -305,6 +389,81 @@ static void version_strip_modifier_show_preview_flag(Main &bmain)
   }
 }
 
+static void version_scene_strip_view_layer_name(Main &bmain)
+{
+  for (const Scene &scene : bmain.scenes) {
+    Editing *ed = seq::editing_get(&scene);
+    if (ed == nullptr) {
+      continue;
+    }
+
+    seq::foreach_strip(&ed->seqbase, [&](Strip *strip) {
+      if (strip->type != STRIP_TYPE_SCENE || strip->scene == nullptr) {
+        return true;
+      }
+      strip->scene_view_layer_name = BLI_strdup(BKE_view_layer_default_render(strip->scene)->name);
+      return true;
+    });
+  }
+}
+
+/* Compositor node trees with an image input and an image output can likely be used as strip
+ * modifiers. */
+static void enable_compositor_nodes_is_strip_modifier(Main &bmain)
+{
+  for (bNodeTree &group : bmain.nodetrees) {
+    if (group.type != NTREE_COMPOSIT) {
+      continue;
+    }
+    bool has_image_input = false;
+    bool has_image_output = false;
+    group.tree_interface.foreach_item([&](const bNodeTreeInterfaceItem &item) {
+      if (item.item_type != NodeTreeInterfaceItemType::Socket) {
+        /* Continue. */
+        return true;
+      }
+      const auto &socket = reinterpret_cast<const bNodeTreeInterfaceSocket &>(item);
+      if (socket.flag & NODE_INTERFACE_SOCKET_INPUT) {
+        has_image_input = has_image_input || STREQ(socket.socket_type, "NodeSocketColor");
+        /* Continue. */
+        return true;
+      }
+      if (socket.flag & NODE_INTERFACE_SOCKET_OUTPUT) {
+        has_image_output = has_image_output || STREQ(socket.socket_type, "NodeSocketColor");
+        /* Continue. */
+        return true;
+      }
+      /* Break. */
+      return false;
+    });
+
+    if (has_image_input && has_image_output) {
+      if (!group.compositor_node_asset_traits) {
+        group.compositor_node_asset_traits = MEM_new<CompositorNodeAssetTraits>(__func__);
+      }
+      group.compositor_node_asset_traits->flag |= COMPOSIT_NODE_ASSET_STRIP_MODIFIER;
+      bke::node_update_asset_metadata(group);
+    }
+  }
+}
+
+static void versioning_replace_legacy_compositor_switch_node(bNodeTree *node_tree)
+{
+  version_node_input_socket_name(node_tree, CMP_NODE_SWITCH, "On", "True");
+  version_node_input_socket_name(node_tree, CMP_NODE_SWITCH, "Off", "False");
+  version_node_output_socket_name(node_tree, CMP_NODE_SWITCH, "Image", "Output");
+
+  for (bNode &node : node_tree->nodes) {
+    if (node.type_legacy == CMP_NODE_SWITCH) {
+      node.type_legacy = GEO_NODE_SWITCH;
+      NodeSwitch *storage = MEM_new<NodeSwitch>(__func__);
+      storage->input_type = SOCK_RGBA;
+      STRNCPY_UTF8(node.idname, "GeometryNodeSwitch");
+      node.storage = storage;
+    }
+  }
+}
+
 void do_versions_after_linking_520(FileData *fd, Main *bmain)
 {
   if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 2)) {
@@ -328,12 +487,60 @@ void do_versions_after_linking_520(FileData *fd, Main *bmain)
     }
   }
 
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 27)) {
+    version_scene_strip_view_layer_name(*bmain);
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 36)) {
+    /* Shift animation data to accommodate the new thin wall input. */
+    version_node_socket_index_animdata(bmain, NTREE_SHADER, SH_NODE_BSDF_PRINCIPLED, 5, 1, 31);
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 44)) {
+    /* We have to remove the invalid motion paths. Re-baking into clip space on file load would be
+     * very expensive. */
+    for (Object &object : bmain->objects) {
+      if (object.mpath && (object.avs.path_bakeflag & MOTIONPATH_BAKE_CAMERA_SPACE)) {
+        animviz_free_motionpath(object.mpath);
+        object.mpath = nullptr;
+        object.avs.path_bakeflag &= ~MOTIONPATH_BAKE_HAS_PATHS;
+      }
+      if (object.pose && (object.pose->avs.path_bakeflag & MOTIONPATH_BAKE_CAMERA_SPACE)) {
+        for (bPoseChannel &pose_bone : object.pose->chanbase) {
+          if (pose_bone.mpath) {
+            animviz_free_motionpath(pose_bone.mpath);
+            pose_bone.mpath = nullptr;
+          }
+        }
+        object.pose->avs.path_bakeflag &= ~MOTIONPATH_BAKE_HAS_PATHS;
+      }
+    }
+  }
+
   /**
    * Always bump subversion in BKE_blender_version.h when adding versioning
    * code here, and wrap it inside a MAIN_VERSION_FILE_ATLEAST check.
    *
    * \note Keep this message at the bottom of the function.
    */
+}
+
+static void version_solid_color_width_height_defaults(Main &bmain)
+{
+  for (Scene &scene : bmain.scenes) {
+    Editing *ed = seq::editing_get(&scene);
+    if (ed == nullptr) {
+      continue;
+    }
+    seq::foreach_strip(&ed->seqbase, [&](Strip *strip) {
+      if (strip->type == STRIP_TYPE_COLOR && strip->effectdata != nullptr) {
+        SolidColorVars *data = static_cast<SolidColorVars *>(strip->effectdata);
+        data->width = scene.r.xsch;
+        data->height = scene.r.ysch;
+      }
+      return true;
+    });
+  }
 }
 
 void blo_do_versions_520(FileData * /*fd*/, Library * /*lib*/, Main *bmain)
@@ -578,6 +785,113 @@ void blo_do_versions_520(FileData * /*fd*/, Library * /*lib*/, Main *bmain)
       }
     }
     FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 28)) {
+    version_text_strip_space_line(*bmain);
+    version_compositor_effect_initialized(*bmain);
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 29)) {
+    for (bScreen &screen : bmain->screens) {
+      for (ScrArea &area : screen.areabase) {
+        for (SpaceLink &sl : area.spacedata) {
+          if (sl.spacetype != SPACE_SEQ) {
+            continue;
+          }
+          ListBaseT<ARegion> *regionbase = (&sl == area.spacedata.first) ? &area.regionbase :
+                                                                           &sl.regionbase;
+          ARegion *scrubbing_region = do_versions_add_region_if_not_found(
+              regionbase, RGN_TYPE_SCRUBBING, "Scrubbing Region", RGN_TYPE_FOOTER);
+          if (scrubbing_region) {
+            scrubbing_region->alignment = RGN_ALIGN_BOTTOM | RGN_STACK_ON_PREV |
+                                          RGN_ALIGN_HIDE_WITH_PREV;
+          }
+        }
+      }
+    }
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 30)) {
+    enable_compositor_nodes_is_strip_modifier(*bmain);
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 31)) {
+    for (Mesh &mesh : bmain->meshes) {
+      if (mesh.attributes().contains(".uv_seam")) {
+        mesh.attributes_for_write().rename(".uv_seam", "uv_seam");
+      }
+    }
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 34)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_COMPOSIT) {
+        versioning_replace_legacy_compositor_switch_node(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 35)) {
+    for (Object &object : bmain->objects) {
+      object.parent_bone_head_tail_factor = 1.0;
+    }
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 37)) {
+    version_text_strip_abs_space_line(*bmain);
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 38)) {
+    for (Brush &brush : bmain->brushes) {
+      if (brush.gpencil_settings != nullptr) {
+        brush.gpencil_settings->fill_gap_factor = 0.4f;
+        brush.gpencil_settings->flag |= GP_BRUSH_FILL_INTERNAL_GAPS;
+      }
+    }
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 39)) {
+    for (bScreen &screen : bmain->screens) {
+      for (ScrArea &area : screen.areabase) {
+        for (SpaceLink &sl : area.spacedata) {
+          if (sl.spacetype == SPACE_SEQ) {
+            SpaceSeq *sseq = reinterpret_cast<SpaceSeq *>(&sl);
+            sseq->preview_overlay.flag |= SEQ_PREVIEW_SHOW_COMPOSITION_GUIDES;
+            float default_col[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+            copy_v4_v4(sseq->preview_overlay.composition_guide_color, default_col);
+          }
+        }
+      }
+    }
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 40)) {
+    for (wmWindowManager &wm : bmain->wm) {
+      wm.xr.session_settings.viewfinder_enabled = false;
+      wm.xr.session_settings.viewfinder_crosshair_enabled = true;
+
+      wm.xr.session_settings.viewfinder_hand = XR_VIEWFINDER_HAND_RIGHT;
+      wm.xr.session_settings.viewfinder_scale = 1.0f;
+
+      wm.xr.session_settings.viewfinder_passepartout_overscan = 0.5f;
+      wm.xr.session_settings.viewfinder_passepartout_opacity = 0.5f;
+    }
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 41)) {
+    version_solid_color_width_height_defaults(*bmain);
+  }
+
+  /* Fix the fact that previously, making a linked data local and/or clearing a liboverride would
+   * not properly flag some sub-data like modifiers or constraints as local. */
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 502, 43)) {
+    for (ID &id : MainAllIDsIterator{*bmain}) {
+      if (!ID_IS_LINKED(&id) && !ID_IS_OVERRIDE_LIBRARY(&id)) {
+        BKE_lib_override_flag_subdata_local(id);
+      }
+    }
   }
 
   /**

@@ -14,7 +14,7 @@
 #include "MEM_guardedalloc.h"
 
 #include "BLI_index_range.hh"
-#include "BLI_listbase.h"
+#include "BLI_listbase.hh"
 #include "BLI_span.hh"
 #include "BLI_string_ref.hh"
 
@@ -321,7 +321,7 @@ static void drw_mesh_weight_state_extract(
   memset(wstate, 0, sizeof(*wstate));
 
   wstate->defgroup_active = mesh.vertex_group_active_index - 1;
-  wstate->defgroup_len = BLI_listbase_count(&mesh.vertex_group_names);
+  wstate->defgroup_len = mesh.vertex_group_names.count();
 
   wstate->alert_mode = ts.weightuser;
 
@@ -493,9 +493,21 @@ static void mesh_batch_cache_request_surface_batches(Mesh &mesh, MeshBatchCache 
   }
 }
 
+static void mesh_batch_cache_request_surface_blas(MeshBatchCache &cache)
+{
+  cache.surface_blas_requested = true;
+  DRW_blas_request(&cache.surface_blas);
+}
+
 static void mesh_batch_cache_discard_shaded_tri(MeshBatchCache &cache)
 {
   discard_buffers(cache, {VBOType::UVs, VBOType::Tangents, VBOType::Orco}, {});
+
+  if (cache.surface_blas) {
+    GPU_ray_tracing_blas_discard(cache.surface_blas);
+    cache.surface_blas = nullptr;
+    cache.surface_blas_ready = false;
+  }
 }
 
 static void mesh_batch_cache_discard_uvedit(MeshBatchCache &cache)
@@ -611,6 +623,12 @@ static void mesh_batch_cache_clear(MeshBatchCache &cache)
   drw_mesh_weight_state_clear(&cache.weight_state);
 
   mesh_batch_cache_free_subdiv_cache(cache);
+
+  if (cache.surface_blas) {
+    GPU_ray_tracing_blas_discard(cache.surface_blas);
+    cache.surface_blas = nullptr;
+    cache.surface_blas_ready = false;
+  }
 }
 
 void DRW_mesh_batch_cache_free(draw::MeshBatchCache *batch_cache)
@@ -680,6 +698,14 @@ gpu::Batch *DRW_mesh_batch_cache_get_surface(Mesh &mesh)
   mesh_batch_cache_request_surface_batches(mesh, cache);
 
   return cache.batch.surface;
+}
+
+gpu::BottomLevelAS *DRW_mesh_batch_cache_get_surface_blas(Mesh &mesh)
+{
+  MeshBatchCache &cache = *mesh_batch_cache_get(mesh);
+  mesh_batch_cache_request_surface_blas(cache);
+
+  return cache.surface_blas;
 }
 
 gpu::Batch *DRW_mesh_batch_cache_get_paint_overlay_surface(Mesh &mesh)
@@ -1073,7 +1099,7 @@ void DRW_mesh_batch_cache_create_requested(TaskGraph &task_graph,
   bool cd_uv_update = false;
 
   /* Early out */
-  if (cache.batch_requested == 0) {
+  if (cache.batch_requested == 0 && !cache.surface_blas_requested) {
     return;
   }
 
@@ -1197,7 +1223,7 @@ void DRW_mesh_batch_cache_create_requested(TaskGraph &task_graph,
   }
 
   /* Second chance to early out */
-  if ((batch_requested & ~cache.batch_ready) == 0) {
+  if ((batch_requested & ~cache.batch_ready) == 0 && !cache.surface_blas_requested) {
     return;
   }
 
@@ -1754,6 +1780,14 @@ void DRW_mesh_batch_cache_create_requested(TaskGraph &task_graph,
   }
 
   cache.batch_ready |= batch_requested;
+
+  if (cache.surface_blas_requested && !cache.surface_blas_ready) {
+    cache.surface_blas->add_geometry(*cache.final.buff.ibos.lookup(IBOType::Tris),
+                                     *cache.final.buff.vbos.lookup(VBOType::Position));
+    cache.surface_blas->build();
+    cache.surface_blas_ready = true;
+  }
+  cache.surface_blas_requested = false;
 }
 
 /** \} */

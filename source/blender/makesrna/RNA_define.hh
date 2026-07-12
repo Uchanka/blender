@@ -80,7 +80,7 @@ void RNA_def_struct_sdna_from(StructRNA *srna, const char *structname, const cha
  * Define the struct's String property used to retrieve the name of a PointerRNA of that type.
  * Used e.g. in several UI widget displaying content of RNA collections.
  *
- * \param allow_replace If true, allow replacing an already defined struct name property.
+ * \param allow_replace: If true, allow replacing an already defined struct name property.
  */
 void RNA_def_struct_name_property(StructRNA *srna, PropertyRNA *prop, bool allow_replace = false);
 void RNA_def_struct_nested(BlenderRNA *brna, StructRNA *srna, const char *structname);
@@ -516,7 +516,7 @@ void RNA_def_property_deprecated(PropertyRNA *prop,
                                  short removal_version);
 
 /**
- * The values hare are a little confusing:
+ * The values here are a little confusing:
  *
  * \param step: Used as the value to increase/decrease when clicking on number buttons,
  * as well as scaling mouse input for click-dragging number buttons.
@@ -664,6 +664,7 @@ void RNA_def_property_pointer_funcs_runtime(PropertyRNA *prop,
                                             PointerPropertyGetFunc getfunc,
                                             PointerPropertySetFunc setfunc,
                                             PointerPropertyTypeFunc typefunc);
+void RNA_def_property_pointer_default_runtime(PropertyRNA *prop, uint32_t id_session_uid);
 
 void RNA_def_property_translation_context(PropertyRNA *prop, const char *context);
 

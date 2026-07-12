@@ -8,9 +8,11 @@
 
 #include <cstring>
 
-#include "BLI_listbase.h"
+#include "BLI_listbase.hh"
 #include "BLI_set.hh"
-#include "BLI_utildefines.h"
+#include "BLI_utildefines.hh"
+
+#include "BLT_translation.hh"
 
 #include "DNA_ID.h"
 #include "DNA_collection_types.h"
@@ -163,7 +165,7 @@ void ED_outliner_selected_objects_get(const bContext *C, ListBaseT<LinkData> *ob
     Object *ob = id_cast<Object *>(TREESTORE(ten_selected)->id);
     BLI_addtail(objects, BLI_genericNodeN(ob));
   }
-  BLI_freelistN(&data.selected_array);
+  data.selected_array.free_no_destruct();
 }
 
 namespace ed::outliner {
@@ -283,6 +285,14 @@ static wmOperatorStatus collection_new_exec(bContext *C, wmOperator *op)
 
   Collection *new_collection = BKE_collection_add(bmain, data.collection, nullptr);
   new_collection->color_tag = data.collection->color_tag;
+  BKE_view_layer_synced_ensure(*bmain, scene, view_layer);
+  if (LayerCollection *layer_collection = BKE_layer_collection_first_from_scene_collection(
+          view_layer, new_collection))
+  {
+    BKE_layer_collection_activate(view_layer, layer_collection);
+    ED_outliner_select_sync_from_collection_tag(C);
+    ED_outliner_select_sync_flag_outliners(C);
+  }
 
   DEG_id_tag_update(&data.collection->id, ID_RECALC_SYNC_TO_EVAL);
   DEG_relations_tag_update(bmain);
@@ -550,7 +560,7 @@ static wmOperatorStatus collection_objects_select_exec(bContext *C, wmOperator *
     }
   }
 
-  BLI_freelistN(&selected_collections.selected_array);
+  selected_collections.selected_array.free_no_destruct();
   DEG_id_tag_update(&scene->id, ID_RECALC_SELECT);
   WM_main_add_notifier(NC_SCENE | ND_OB_SELECT, scene);
   ED_outliner_select_sync_from_object_tag(C);
@@ -646,7 +656,7 @@ static wmOperatorStatus collection_duplicate_exec(bContext *C, wmOperator *op)
                          &selected_collections);
 
   /* Can happen when calling from a key binding. */
-  if (BLI_listbase_is_empty(&selected_collections.selected_array)) {
+  if (selected_collections.selected_array.is_empty()) {
     BKE_report(op->reports, RPT_ERROR, "No collection selected");
     return OPERATOR_CANCELLED;
   }
@@ -702,7 +712,7 @@ static wmOperatorStatus collection_duplicate_exec(bContext *C, wmOperator *op)
                 failed_count);
   }
 
-  BLI_freelistN(&selected_collections.selected_array);
+  selected_collections.selected_array.free_no_destruct();
   DEG_relations_tag_update(bmain);
   WM_main_add_notifier(NC_SCENE | ND_LAYER, CTX_data_scene(C));
   ED_outliner_select_sync_from_object_tag(C);
@@ -1648,11 +1658,32 @@ static wmOperatorStatus outliner_color_tag_set_exec(bContext *C, wmOperator *op)
     collection->color_tag = color_tag;
   };
 
-  BLI_freelistN(&selected.selected_array);
+  selected.selected_array.free_no_destruct();
 
   WM_event_add_notifier(C, NC_SCENE | ND_LAYER_CONTENT, nullptr);
 
   return OPERATOR_FINISHED;
+}
+
+static std::string outliner_collection_color_tag_set_get_name(wmOperatorType *ot,
+                                                              PointerRNA *properties)
+{
+  const int color = RNA_enum_get(properties, "color");
+  if (color == COLLECTION_COLOR_NONE) {
+    return TIP_("Remove Color Tag");
+  }
+  return CTX_IFACE_(ot->translation_context, ot->name);
+}
+
+static std::string outliner_collection_color_tag_set_get_description(bContext * /*C*/,
+                                                                     wmOperatorType *ot,
+                                                                     PointerRNA *properties)
+{
+  const int color = RNA_enum_get(properties, "color");
+  if (color == COLLECTION_COLOR_NONE) {
+    return TIP_("Remove color tag from the selected collections");
+  }
+  return ot->description ? CTX_IFACE_(ot->translation_context, ot->description) : "";
 }
 
 void OUTLINER_OT_collection_color_tag_set(wmOperatorType *ot)
@@ -1665,6 +1696,8 @@ void OUTLINER_OT_collection_color_tag_set(wmOperatorType *ot)
   /* API callbacks. */
   ot->exec = outliner_color_tag_set_exec;
   ot->poll = ED_outliner_collections_editor_poll;
+  ot->get_name = outliner_collection_color_tag_set_get_name;
+  ot->get_description = outliner_collection_color_tag_set_get_description;
 
   /* flags */
   ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;

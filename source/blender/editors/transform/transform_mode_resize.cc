@@ -11,8 +11,8 @@
 
 #include "DNA_windowmanager_types.h"
 
-#include "BLI_math_matrix.h"
-#include "BLI_math_vector.h"
+#include "BLI_math_matrix_c.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_task.hh"
 
 #include "BKE_context.hh"
@@ -278,7 +278,7 @@ static void initResize(TransInfo *t, wmOperator *op)
   const bool only_location = transform_mode_affect_only_locations(t);
   if (only_location) {
     WorkspaceStatus status(t->context);
-    status.item(TIP_("Transform is set to only affect location"), ICON_ERROR);
+    status.item(TIP_("Transform is set to only affect location"), ICON_STATUS_WARNING_FILLED);
   }
 
   if (is_zero_v3(mouse_dir_constraint)) {

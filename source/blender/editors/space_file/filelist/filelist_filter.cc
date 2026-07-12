@@ -9,13 +9,13 @@
 #include "AS_asset_representation.hh"
 #include "AS_essentials_library.hh"
 
-#include "BLI_fnmatch.h"
-#include "BLI_listbase.h"
+#include "BLI_fnmatch.hh"
+#include "BLI_listbase.hh"
 #include "BLI_path_utils.hh"
-#include "BLI_string.h"
+#include "BLI_string.hh"
 #include "BLI_string_search.hh"
-#include "BLI_string_utf8.h"
-#include "BLI_uuid.h"
+#include "BLI_string_utf8.hh"
+#include "BLI_uuid.hh"
 #include "BLI_vector.hh"
 
 #include "BKE_idtype.hh"
@@ -189,7 +189,7 @@ bool is_filtered_asset(FileListInternEntry *file, FileListFilter *filter)
     return false;
   }
 
-  const bool is_online = asset->is_online();
+  const bool is_online = asset->is_online_only();
   if (((filter->flags & FLF_ASSETS_HIDE_ONLINE) != 0) && is_online) {
     return false;
   }

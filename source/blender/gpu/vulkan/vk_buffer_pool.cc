@@ -6,7 +6,7 @@
  * \ingroup gpu
  */
 
-#include "BLI_math_base.h"
+#include "BLI_math_base_c.hh"
 
 #include "vk_buffer.hh"
 #include "vk_buffer_pool.hh"
@@ -38,12 +38,14 @@ VKBufferWithOffset VKBufferPool::append(Span<uint8_t> data)
                        vk_buffer_usage_,
                        vma_memory_usage_,
                        vma_allocation_create_flags_,
-                       priority_);
+                       priority_,
+                       false,
+                       name_.c_str());
     debug::object_label(new_buffer->vk_handle(), name_);
     buffers_.append(std::move(new_buffer));
     buffer_offset_ = 0;
   }
-  VKBufferWithOffset result = {.buffer = buffers_.last()->vk_handle(), .offset = buffer_offset_};
+  VKBufferWithOffset result = {.buffer = buffers_.last()->resource(), .offset = buffer_offset_};
 
   /* Resize data_ when more space is needed than the default_buffer_size_. */
   if (buffer_offset_ + data.size() > data_.size()) {

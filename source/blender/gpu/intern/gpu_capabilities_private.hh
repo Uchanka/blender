@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "BLI_sys_types.h"
+#include "BLI_sys_types.hh"
 
 namespace blender::gpu {
 
@@ -46,6 +46,7 @@ struct GPUCapabilities {
   bool geometry_shader_support = false;
   bool hdr_viewport_support = false;
   bool stencil_export_support = false;
+  bool ray_query_support = false;
 
   int max_parallel_compilations = -1;
 

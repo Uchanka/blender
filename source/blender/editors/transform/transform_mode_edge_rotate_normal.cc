@@ -8,12 +8,13 @@
 
 #include <cstdlib>
 
-#include "BLI_math_matrix.h"
-#include "BLI_math_rotation.h"
-#include "BLI_math_vector.h"
+#include "BLI_math_matrix_c.hh"
+#include "BLI_math_rotation_c.hh"
+#include "BLI_math_vector_c.hh"
 
 #include "BKE_editmesh.hh"
 #include "BKE_mesh.hh"
+#include "BKE_report.hh"
 #include "BKE_unit.hh"
 
 #include "ED_screen.hh"
@@ -119,6 +120,12 @@ static void applyNormalRotation(TransInfo *t)
 
 static void initNormalRotation(TransInfo *t, wmOperator * /*op*/)
 {
+  if ((t->flag & T_EDIT) == 0 || (t->obedit_type != OB_MESH)) {
+    BKE_report(t->reports, RPT_ERROR, "'Rotate Normals' is only supported in mesh edit mode");
+    t->state = TRANS_CANCEL;
+    return;
+  }
+
   t->mode = TFM_NORMAL_ROTATION;
 
   initMouseInputMode(t, &t->mouse, INPUT_ANGLE);

@@ -9,11 +9,11 @@
 #include "AS_asset_representation.hh"
 
 #include "BKE_node_socket_value.hh"
-#include "BLI_listbase.h"
-#include "BLI_math_vector.h"
+#include "BLI_listbase.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_stack.hh"
-#include "BLI_string.h"
-#include "BLI_string_utf8.h"
+#include "BLI_string.hh"
+#include "BLI_string_utf8.hh"
 
 #include "DNA_ID.h"
 #include "DNA_gpencil_legacy_types.h"
@@ -80,7 +80,7 @@ void ED_node_tree_start(ARegion *region, SpaceNode *snode, bNodeTree *ntree, ID 
   for (bNodeTreePath &path : snode->treepath.items_mutable()) {
     MEM_delete(&path);
   }
-  BLI_listbase_clear(&snode->treepath);
+  snode->treepath.clear_no_delete();
 
   if (ntree) {
     bNodeTreePath *path = MEM_new<bNodeTreePath>("node tree path");
@@ -199,7 +199,7 @@ void ED_node_tree_pop(ARegion *region, SpaceNode *snode)
 
 int ED_node_tree_depth(SpaceNode *snode)
 {
-  return BLI_listbase_count(&snode->treepath);
+  return snode->treepath.count();
 }
 
 bNodeTree *ED_node_tree_get(SpaceNode *snode, int level)
@@ -336,7 +336,8 @@ std::optional<nodes::FoundNestedNodeID> find_nested_node_id_in_root(
   return found;
 }
 
-std::optional<ObjectAndModifier> get_modifier_for_node_editor(const SpaceNode &snode)
+std::optional<ObjectAndModifier> get_geometry_nodes_modifier_for_node_editor(
+    const SpaceNode &snode)
 {
   if (snode.node_tree_sub_type != SNODE_GEOMETRY_MODIFIER) {
     return std::nullopt;
@@ -384,7 +385,8 @@ bool node_editor_is_for_geometry_nodes_modifier(const SpaceNode &snode,
                                                 const Object &object,
                                                 const NodesModifierData &nmd)
 {
-  const std::optional<ObjectAndModifier> object_and_modifier = get_modifier_for_node_editor(snode);
+  const std::optional<ObjectAndModifier> object_and_modifier =
+      get_geometry_nodes_modifier_for_node_editor(snode);
   if (!object_and_modifier) {
     return false;
   }
@@ -494,13 +496,14 @@ static const ComputeContext *get_node_editor_root_compute_context(
     switch (SpaceNodeGeometryNodesType(snode.node_tree_sub_type)) {
       case SNODE_GEOMETRY_MODIFIER: {
         std::optional<ed::space_node::ObjectAndModifier> object_and_modifier =
-            ed::space_node::get_modifier_for_node_editor(snode);
+            ed::space_node::get_geometry_nodes_modifier_for_node_editor(snode);
         if (!object_and_modifier) {
           return nullptr;
         }
         const bke::DataBlockComputeContext &object_context = compute_context_cache.for_data_block(
             nullptr, object_and_modifier->object->id);
-        return &compute_context_cache.for_modifier(&object_context, *object_and_modifier->nmd);
+        return &compute_context_cache.for_geometry_nodes_modifier(&object_context,
+                                                                  *object_and_modifier->nmd);
       }
       case SNODE_GEOMETRY_TOOL: {
         return &compute_context_cache.for_operator(nullptr);
@@ -675,7 +678,7 @@ static SpaceLink *node_create(const ScrArea * /*area*/, const Scene * /*scene*/)
 static void node_free(SpaceLink *sl)
 {
   SpaceNode *snode = reinterpret_cast<SpaceNode *>(sl);
-  BLI_freelistN(&snode->treepath);
+  snode->treepath.free_no_destruct();
   MEM_delete(snode->runtime);
 }
 
@@ -830,6 +833,8 @@ static void node_area_listener(const wmSpaceTypeListenerParams *params)
             node_area_tag_tree_recalc(snode, area);
           }
         }
+
+        ED_area_tag_redraw(area);
       }
       break;
 
@@ -1315,7 +1320,7 @@ static void node_region_listener(const wmRegionListenerParams *params)
       ED_region_tag_redraw(region);
       break;
     case NC_OBJECT:
-      if (wmn->data == ND_OB_SHADING) {
+      if (wmn->data == ND_OB_SHADING || wmn->data == ND_TRANSFORM) {
         ED_region_tag_redraw(region);
       }
       break;
@@ -1380,15 +1385,6 @@ static int /*eContextResult*/ node_context(const bContext *C,
     CTX_data_type_set(result, ContextDataType::Pointer);
     return CTX_RESULT_OK;
   }
-  if (CTX_data_equals(member, "node_previews")) {
-    if (snode->nodetree) {
-      CTX_data_pointer_set(
-          result, &snode->nodetree->id, RNA_NodeInstanceHash, &snode->nodetree->runtime->previews);
-    }
-
-    CTX_data_type_set(result, ContextDataType::Pointer);
-    return CTX_RESULT_OK;
-  }
   if (CTX_data_equals(member, "material")) {
     if (snode->id && GS(snode->id->name) == ID_MA) {
       CTX_data_id_pointer_set(result, snode->id);
@@ -1441,7 +1437,7 @@ static void node_id_remap(ID *old_id, ID *new_id, SpaceNode *snode)
     /* nasty DNA logic for SpaceNode:
      * ideally should be handled by editor code, but would be bad level call
      */
-    BLI_freelistN(&snode->treepath);
+    snode->treepath.free_no_destruct();
 
     /* XXX Untested in case new_id != nullptr... */
     snode->id = new_id;

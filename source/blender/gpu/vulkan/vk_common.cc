@@ -6,8 +6,9 @@
  * \ingroup gpu
  */
 
-#include "BLI_utildefines.h"
+#include "BLI_utildefines.hh"
 
+#include "GPU_texture.hh"
 #include "vk_backend.hh"
 #include "vk_common.hh"
 
@@ -611,7 +612,7 @@ VkClearColorValue to_vk_clear_color_value(const eGPUDataFormat format, const dou
 {
   VkClearColorValue result = {{0.0f}};
   switch (format) {
-    /* All float-like formats (i.e. everything except literal int/uint go
+    /* All float-like formats (i.e. everything except literal int/uint) go
      * into VkClearColorValue float color fields. */
     case GPU_DATA_FLOAT:
     case GPU_DATA_HALF_FLOAT:
@@ -830,6 +831,8 @@ VkDescriptorType to_vk_descriptor_type(const shader::ShaderCreateInfo::Resource 
       return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     case shader::ShaderCreateInfo::Resource::BindType::UNIFORM_BUFFER:
       return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case shader::ShaderCreateInfo::Resource::BindType::ACCELERATION_STRUCTURE:
+      return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
   }
   BLI_assert_unreachable();
   return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -837,7 +840,7 @@ VkDescriptorType to_vk_descriptor_type(const shader::ShaderCreateInfo::Resource 
 
 VkImageCreateFlags to_vk_image_create(const GPUTextureType texture_type,
                                       const GPUTextureFormatFlag format_flag,
-                                      const eGPUTextureUsage usage)
+                                      eGPUTextureUsage usage)
 {
   VkImageCreateFlags result = 0;
 
@@ -847,6 +850,10 @@ VkImageCreateFlags to_vk_image_create(const GPUTextureType texture_type,
 
   /* sRGB textures needs to be mutable as they can be used as non-sRGB frame-buffer attachments. */
   if (usage & GPU_TEXTURE_USAGE_ATTACHMENT && format_flag & GPU_FORMAT_SRGB) {
+    result |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+  }
+
+  if (usage & GPU_TEXTURE_USAGE_FORMAT_VIEW) {
     result |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
   }
 

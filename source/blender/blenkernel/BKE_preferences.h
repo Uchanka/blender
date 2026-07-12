@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include "BLI_compiler_attrs.h"
-#include "BLI_sys_types.h"
+#include "BLI_compiler_attrs.hh"
+#include "BLI_sys_types.hh"
 
 namespace blender {
 
@@ -19,6 +19,7 @@ struct bUserExtensionRepo;
 struct bUserAssetLibrary;
 struct bUserAssetShelfSettings;
 class StringRef;
+struct EnumPropertyItem;
 
 /* -------------------------------------------------------------------- */
 /** \name Preferences File
@@ -218,6 +219,7 @@ bool BKE_preferences_asset_shelf_settings_ensure_catalog_path_enabled(UserDef *u
                                                                       const char *shelf_idname,
                                                                       const char *catalog_path);
 
+const EnumPropertyItem *BKE_preferences_active_section_itemf(const UserDef *userdef, bool *r_free);
 /** \} */
 
 }  // namespace blender

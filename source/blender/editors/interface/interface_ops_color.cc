@@ -12,7 +12,7 @@
 #include <string>
 
 #include "BLI_set.hh"
-#include "BLI_string.h"
+#include "BLI_string.hh"
 #include "BLI_vector.hh"
 
 #include "BKE_context.hh"
@@ -172,7 +172,7 @@ static void colorspaces_menu_draw(const bContext *C, Menu *menu)
   for (const StringRef &dir : subdirs) {
     std::string path = root + std::string(dir);
     col.context_string_set("colorspace_parent_path", path);
-    col.menu(COLORSPACE_MENU_ID, dir, ICON_NONE);
+    col.menu(COLORSPACE_MENU_ID, IFACE_(dir), ICON_NONE);
   }
 
   if (!subdirs.is_empty() && !colorspaces_at_this_level.is_empty()) {
@@ -184,8 +184,8 @@ static void colorspaces_menu_draw(const bContext *C, Menu *menu)
                                 ptr,
                                 prop,
                                 IMB_colormanagement_colorspace_get_name(cs),
-                                IMB_colormanagement_colorspace_get_name(cs),
-                                IMB_colormanagement_colorspace_get_description(cs));
+                                IFACE_(IMB_colormanagement_colorspace_get_name(cs)),
+                                TIP_(IMB_colormanagement_colorspace_get_description(cs)));
   }
 
   if (!parent_path) {

@@ -10,22 +10,20 @@
 
 /* vk_common needs to be included first to ensure win32 vulkan API is fully initialized, before
  * working with it. */
+#include "GPU_texture.hh"
 #include "vk_common.hh"
 
 #include "vk_texture.hh"
 
+#include "vk_backend.hh"
 #include "vk_buffer.hh"
 #include "vk_context.hh"
 #include "vk_data_conversion.hh"
 #include "vk_framebuffer.hh"
 #include "vk_memory_layout.hh"
 #include "vk_pixel_buffer.hh"
-#include "vk_shader.hh"
-#include "vk_shader_interface.hh"
 #include "vk_state_manager.hh"
 #include "vk_vertex_buffer.hh"
-
-#include "BLI_math_vector.hh"
 
 #include "BKE_global.hh"
 
@@ -281,12 +279,14 @@ void VKTexture::read_sub(
                            * bit to improve the performance on AMD GPUs. */
                           VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
                               VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                          0.2f);
+                          0.2f,
+                          false,
+                          "VKTexture::read_sub");
 
     render_graph::VKCopyImageToBufferNode::CreateInfo copy_image_to_buffer = {};
     render_graph::VKCopyImageToBufferNode::Data &node_data = copy_image_to_buffer.node_data;
     node_data.src_image = vk_image_handle();
-    node_data.dst_buffer = staging_buffer.vk_handle();
+    node_data.dst_buffer = staging_buffer.resource();
     node_data.region.imageOffset.x = transfer_region.offset.x;
     node_data.region.imageOffset.y = transfer_region.offset.y;
     node_data.region.imageOffset.z = transfer_region.offset.z;
@@ -312,12 +312,13 @@ void VKTexture::read_sub(
   /* Convert the data to r_data. */
   for (int index : transfer_regions.index_range()) {
     const TransferRegion &transfer_region = transfer_regions[index];
-    const VKBuffer &staging_buffer = staging_buffers[index];
+    VKBuffer &staging_buffer = staging_buffers[index];
     size_t sample_len = transfer_region.sample_count();
 
     size_t data_offset = full_transfer_region.result_offset(transfer_region.offset,
                                                             transfer_region.layers.start()) *
                          sample_bytesize;
+    staging_buffer.invalidate_mapped_memory();
     convert_device_to_host(static_cast<void *>(static_cast<uint8_t *>(r_data) + data_offset),
                            staging_buffer.mapped_memory_get(),
                            sample_len,
@@ -462,15 +463,17 @@ void VKTexture::update_sub(int mip,
   }
 
   VKBuffer staging_buffer;
-  VkBuffer vk_buffer = VK_NULL_HANDLE;
+  VKResourceWithHandle<VkBuffer> buffer = {};
   if (data) {
     staging_buffer.create(device_memory_size,
                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                           VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
                           VMA_ALLOCATION_CREATE_MAPPED_BIT |
                               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-                          0.4f);
-    vk_buffer = staging_buffer.vk_handle();
+                          0.4f,
+                          false,
+                          "VKTexture::update_sub");
+    buffer = staging_buffer.resource();
     /* Rows are sequentially stored, when unpack row length is 0, or equal to the extent width. In
      * other cases we unpack the rows to reduce the size of the staging buffer and data transfer.
      */
@@ -495,15 +498,16 @@ void VKTexture::update_sub(int mip,
         dst_ptr += dst_row_stride;
       }
     }
+    staging_buffer.flush_mapped_memory();
   }
   else {
     BLI_assert(pixel_buffer);
-    vk_buffer = pixel_buffer->buffer_get().vk_handle();
+    buffer = pixel_buffer->buffer_get().resource();
   }
 
   render_graph::VKCopyBufferToImageNode::CreateInfo copy_buffer_to_image = {};
   render_graph::VKCopyBufferToImageNode::Data &node_data = copy_buffer_to_image.node_data;
-  node_data.src_buffer = vk_buffer;
+  node_data.src_buffer = buffer;
   node_data.dst_image = vk_image_handle();
   node_data.region.imageExtent.width = extent.x;
   node_data.region.imageExtent.height = extent.y;
@@ -558,7 +562,7 @@ VKMemoryExport VKTexture::export_memory(VkExternalMemoryHandleTypeFlagBits handl
                                                   allocation_info_.deviceMemory,
                                                   handle_type};
     int fd_handle = 0;
-    device.functions.vkGetMemoryFd(device.vk_handle(), &vk_memory_get_fd_info, &fd_handle);
+    device.functions.vkGetMemoryFdKHR(device.vk_handle(), &vk_memory_get_fd_info, &fd_handle);
     return {uint64_t(fd_handle), allocation_info_.size, allocation_info_.offset};
   }
 
@@ -570,7 +574,7 @@ VKMemoryExport VKTexture::export_memory(VkExternalMemoryHandleTypeFlagBits handl
         allocation_info_.deviceMemory,
         handle_type};
     HANDLE win32_handle = nullptr;
-    device.functions.vkGetMemoryWin32Handle(
+    device.functions.vkGetMemoryWin32HandleKHR(
         device.vk_handle(), &vk_memory_get_win32_handle_info, &win32_handle);
     return {uint64_t(win32_handle), allocation_info_.size, allocation_info_.offset};
   }
@@ -748,6 +752,12 @@ bool VKTexture::allocate()
     external_memory_create_info.handleTypes = vk_external_memory_handle_type();
     allocCreateInfo.pool = device.vma_pools.external_memory_image.pool;
   }
+
+  if (G.debug & G_DEBUG_GPU) {
+    allocCreateInfo.flags |= VMA_ALLOCATION_CREATE_USER_DATA_COPY_STRING_BIT;
+    allocCreateInfo.pUserData = (void *)name_.c_str();
+  }
+
   result = vmaCreateImage(device.mem_allocator_get(),
                           &image_info,
                           &allocCreateInfo,
@@ -828,34 +838,40 @@ const VKImageView &VKTexture::image_view_get(const VKImageViewInfo &info)
 
 const VKImageView &VKTexture::image_view_get(VKImageViewArrayed arrayed, VKImageViewFlags flags)
 {
-  image_view_info_.mip_range = mip_map_range();
-  image_view_info_.use_srgb = true;
-  image_view_info_.use_stencil = use_stencil_;
-  image_view_info_.arrayed = arrayed;
-  image_view_info_.layer_range = layer_range();
+  const VkImageAspectFlags allowed_bits = VK_IMAGE_ASPECT_COLOR_BIT |
+                                          (use_stencil_ ? VK_IMAGE_ASPECT_STENCIL_BIT :
+                                                          VK_IMAGE_ASPECT_DEPTH_BIT);
+  VkFormat vk_format = to_vk_format(device_format_);
+  if (is_texture_view() && source_texture_->usage_get() & GPU_TEXTURE_USAGE_FORMAT_VIEW &&
+      format_ != source_texture_->format_)
+  {
+    vk_format = to_vk_format(format_);
+  }
+
+  VKImageViewInfo image_view_info = {eImageViewUsage::ShaderBinding,
+                                     layer_range(),
+                                     mip_map_range(),
+                                     {{'r', 'g', 'b', 'a'}},
+                                     arrayed,
+                                     vk_format,
+                                     to_vk_image_aspect_flag_bits(format_) & allowed_bits};
 
   if (arrayed == VKImageViewArrayed::NOT_ARRAYED) {
-    image_view_info_.layer_range = image_view_info_.layer_range.slice(
+    image_view_info.layer_range = image_view_info.layer_range.slice(
         0, ELEM(type_, GPU_TEXTURE_CUBE, GPU_TEXTURE_CUBE_ARRAY) ? 6 : 1);
   }
 
-  if (flag_is_set(flags, VKImageViewFlags::NO_SWIZZLING)) {
-    image_view_info_.swizzle[0] = 'r';
-    image_view_info_.swizzle[1] = 'g';
-    image_view_info_.swizzle[2] = 'b';
-    image_view_info_.swizzle[3] = 'a';
-  }
-  else {
-    image_view_info_.swizzle[0] = swizzle_[0];
-    image_view_info_.swizzle[1] = swizzle_[1];
-    image_view_info_.swizzle[2] = swizzle_[2];
-    image_view_info_.swizzle[3] = swizzle_[3];
+  if (!flag_is_set(flags, VKImageViewFlags::NO_SWIZZLING)) {
+    image_view_info.swizzle[0] = swizzle_[0];
+    image_view_info.swizzle[1] = swizzle_[1];
+    image_view_info.swizzle[2] = swizzle_[2];
+    image_view_info.swizzle[3] = swizzle_[3];
   }
 
   if (is_texture_view()) {
-    return source_texture_->image_view_get(image_view_info_);
+    return source_texture_->image_view_get(image_view_info);
   }
-  return image_view_get(image_view_info_);
+  return image_view_get(image_view_info);
 }
 
 /** \} */

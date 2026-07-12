@@ -15,8 +15,8 @@ struct PointerInfo {
   /** Offset in bytes from the start of the struct. */
   int64_t offset;
   /** Additional information about the pointer which can be useful for debugging. */
-  const char *member_type_name = nullptr;
-  const char *name = nullptr;
+  StringRef member_type_name;
+  StringRef name;
 };
 
 /** All pointers within a DNA struct (including nested structs). */
@@ -25,6 +25,8 @@ struct StructInfo {
   Vector<PointerInfo> pointers;
   /** Size of the struct in bytes. */
   int size_in_bytes = 0;
+
+  bool has_pointer_at_offset(int64_t offset) const;
 };
 
 /**

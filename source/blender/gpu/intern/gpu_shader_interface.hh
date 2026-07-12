@@ -15,8 +15,8 @@
 
 #include <cstring> /* required for STREQ later on. */
 
-#include "BLI_hash.h"
-#include "BLI_sys_types.h"
+#include "BLI_hash_c.hh"
+#include "BLI_sys_types.hh"
 
 #include "GPU_format.hh"
 #include "GPU_shader.hh"
@@ -59,6 +59,7 @@ class ShaderInterface {
   uint ubo_len_ = 0;
   uint uniform_len_ = 0;
   uint ssbo_len_ = 0;
+  uint tlas_len_ = 0;
   uint constant_len_ = 0;
   /** Enabled bind-points that needs to be fed with data. */
   uint16_t enabled_attr_mask_ = 0;
@@ -124,10 +125,22 @@ class ShaderInterface {
     return input_lookup(inputs_ + attr_len_ + ubo_len_ + uniform_len_, ssbo_len_, binding);
   }
 
-  const ShaderInput *constant_get(const StringRefNull name) const
+  const ShaderInput *tlas_get(const StringRefNull name) const
   {
     return input_lookup(
-        inputs_ + attr_len_ + ubo_len_ + uniform_len_ + ssbo_len_, constant_len_, name);
+        inputs_ + attr_len_ + ubo_len_ + uniform_len_ + ssbo_len_, tlas_len_, name);
+  }
+  const ShaderInput *tlas_get(const int binding) const
+  {
+    return input_lookup(
+        inputs_ + attr_len_ + ubo_len_ + uniform_len_ + ssbo_len_, tlas_len_, binding);
+  }
+
+  const ShaderInput *constant_get(const StringRefNull name) const
+  {
+    return input_lookup(inputs_ + attr_len_ + ubo_len_ + uniform_len_ + ssbo_len_ + tlas_len_,
+                        constant_len_,
+                        name);
   }
 
   const char *input_name_get(const ShaderInput *input) const

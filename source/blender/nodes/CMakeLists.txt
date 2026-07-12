@@ -109,6 +109,7 @@ set(SRC
   intern/socket_search_link.cc
   intern/socket_usage_inference.cc
   intern/socket_value_inference.cc
+  intern/string_pattern.cc
   intern/sync_sockets.cc
   intern/trace_values.cc
   intern/value_elem.cc
@@ -171,6 +172,7 @@ set(SRC
   NOD_socket_usage_inference.hh
   NOD_socket_usage_inference_fwd.hh
   NOD_socket_value_inference.hh
+  NOD_string_pattern.hh
   NOD_sync_sockets.hh
   NOD_texture.h
   NOD_trace_values.hh
@@ -230,6 +232,7 @@ if(WITH_GTESTS)
   set(TEST_SRC
     intern/geometry_nodes_bundle_tests.cc
     intern/node_iterator_tests.cc
+    intern/node_structure_type_inferencing_tests.cc
   )
   set(TEST_LIB
     ${LIB}

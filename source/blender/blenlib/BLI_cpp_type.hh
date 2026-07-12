@@ -409,7 +409,7 @@ class CPPType : NonCopyable, NonMovable {
    * compile-time. This allows the compiler to optimize a function for specific types, while all
    * other types can still use a generic fallback function.
    *
-   * \param Types: The types that code should be generated for.
+   * \tparam Types: The types that code should be generated for.
    * \param fn: The function object to call. This is expected to have a templated `operator()` and
    * a non-templated `operator()`. The templated version will be called if the current #CPPType
    *   matches any of the given types.
@@ -771,10 +771,10 @@ template<typename... Types, typename Fn> inline bool CPPType::to_static_type_try
      * list. */
     int max_type_index = 0;
     ((max_type_index = std::max(max_type_index, CPPType::get<Types>().type_index)), ...);
-    Array<Callback, 0> callback_array(max_type_index + 1, nullptr);
+    Array<Callback, 0> array(max_type_index + 1, nullptr);
     /* Using call_with_type_impl_ instead of a lambda due to an MSVC bug.  */
-    ((callback_array[CPPType::get<Types>().type_index] = call_with_type_impl_<Types, Fn_>), ...);
-    return callback_array;
+    ((array[CPPType::get<Types>().type_index] = call_with_type_impl_<Types, Fn_>), ...);
+    return array;
   }();
 
   if (this->type_index >= callback_array.size()) {

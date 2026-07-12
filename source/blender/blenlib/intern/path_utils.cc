@@ -12,13 +12,13 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "BLI_fileops.h"
-#include "BLI_fnmatch.h"
+#include "BLI_fileops.hh"
+#include "BLI_fnmatch.hh"
 #include "BLI_path_utils.hh"
-#include "BLI_string.h"
-#include "BLI_string_utf8.h"
+#include "BLI_string.hh"
+#include "BLI_string_utf8.hh"
 #include "BLI_string_utils.hh"
-#include "BLI_utildefines.h"
+#include "BLI_utildefines.hh"
 
 #ifdef WIN32
 #  include "utf_winfunc.hh"
@@ -28,8 +28,8 @@
 #    undef _WIN32_IE
 #  endif
 #  define _WIN32_IE 0x0501
-#  include "BLI_alloca.h"
-#  include "BLI_winstuff.h"
+#  include "BLI_alloca.hh"
+#  include "BLI_winstuff.hh"
 #  include <shlobj.h>
 #  include <windows.h>
 #else
@@ -322,7 +322,7 @@ static int path_normalize_impl(char *path, bool check_blend_relative_prefix)
       path_len -= end - start;
       BLI_assert(strlen(path) == path_len);
       /* Other `..` directories may have been moved to the front, step `start_base` past them. */
-      if (UNLIKELY(start == start_base && (end != end_all))) {
+      if (start == start_base && (end != end_all)) [[unlikely]] {
         start_base += (end_all - end);
         start = (start_base < path + path_len) ? start_base : start_base - 1;
       }
@@ -1024,9 +1024,16 @@ bool BLI_path_frame_get(const char *path, int *r_frame, int *r_digits_len)
     return false;
   }
 
-  /* No need to trim the string, `atio` ignores non-digits. */
-  *r_frame = atoi(c);
   *r_digits_len = digits_len;
+
+  /* Only consider numbers inside the range of valid frame-numbers (ints). */
+  /* No need to trim the string, `strtoll` ignores non-digits. */
+  const long long num = strtoll(c, nullptr, 10);
+  if (num > INT_MAX) {
+    return false;
+  }
+
+  *r_frame = int(num);
   return true;
 }
 
@@ -1040,6 +1047,8 @@ void BLI_path_frame_strip(char *path, char *r_ext, const size_t ext_maxncpy)
 
   char *file = const_cast<char *>(BLI_path_basename(path));
   char *file_ext = const_cast<char *>(BLI_path_extension_or_end(file));
+  BLI_strncpy(r_ext, file_ext, ext_maxncpy);
+
   char *c = file_ext;
 
   /* Find start of number (if there is one). */
@@ -1049,12 +1058,21 @@ void BLI_path_frame_strip(char *path, char *r_ext, const size_t ext_maxncpy)
   }
   c++;
 
-  BLI_strncpy(r_ext, file_ext, ext_maxncpy);
-
-  /* Replace the number with the suffix and terminate the string. */
-  while (digits_len--) {
-    *c++ = '#';
+  /* No need to trim the string, `strtoll` ignores non-digits. */
+  const long long num = strtoll(c, nullptr, 10);
+  if (num <= INT_MAX) {
+    /* Replace the number with the suffix. */
+    while (digits_len--) {
+      *c++ = '#';
+    }
   }
+  else {
+    /* Don't strip numbers outside the range of valid frame-numbers (ints).
+     * So go back to where we were before finding the start of the number. */
+    c += digits_len;
+  }
+
+  /* Terminate the string. */
   *c = '\0';
 }
 
@@ -1280,7 +1298,7 @@ bool BLI_path_program_extensions_add_win32(char *program_name, const size_t prog
         ext_next = strchr(ext, ';');
         ext_len = ext_next ? ((ext_next++) - ext) : strlen(ext);
 
-        if (LIKELY(ext_len < ext_max)) {
+        if (ext_len < ext_max) [[likely]] {
           memcpy(filename_ext, ext, ext_len);
           filename_ext[ext_len] = '\0';
 
@@ -1692,7 +1710,7 @@ size_t BLI_path_join_array(char *__restrict dst,
   BLI_assert(path_array_num > 0);
   BLI_string_debug_size(dst, dst_maxncpy);
 
-  if (UNLIKELY(dst_maxncpy == 0)) {
+  if (dst_maxncpy == 0) [[unlikely]] {
     return 0;
   }
   const char *path = path_array[0];

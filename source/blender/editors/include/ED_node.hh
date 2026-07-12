@@ -74,7 +74,7 @@ void node_insert_on_link_flags_set(SpaceNode &snode,
 /**
  * Tag the editor to highlight the frame that currently transformed nodes will be attached to.
  */
-void node_insert_on_frame_flag_set(bContext &C, SpaceNode &snode, const int2 &cursor);
+void node_insert_on_frame_flag_set(SpaceNode &snode, ARegion &region, const int2 &cursor);
 void node_insert_on_frame_flag_clear(SpaceNode &snode);
 
 /**
@@ -109,9 +109,10 @@ struct ObjectAndModifier {
   const NodesModifierData *nmd = nullptr;
 };
 /**
- * Finds the context-modifier for the node editor.
+ * Finds the geometry nodes context-modifier for the node editor.
  */
-std::optional<ObjectAndModifier> get_modifier_for_node_editor(const SpaceNode &snode);
+std::optional<ObjectAndModifier> get_geometry_nodes_modifier_for_node_editor(
+    const SpaceNode &snode);
 
 bool node_editor_is_for_geometry_nodes_modifier(const SpaceNode &snode,
                                                 const Object &object,

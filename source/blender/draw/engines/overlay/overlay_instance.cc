@@ -115,6 +115,7 @@ void Instance::init()
     state.use_in_front = false;
     state.is_wireframe_mode = false;
     state.hide_overlays = (space_image->overlay.flag & SI_OVERLAY_SHOW_OVERLAYS) == 0;
+    state.show_text = !state.hide_overlays;
     state.xray_enabled = false;
     /* Avoid triggering the depth prepass. */
     state.is_render_depth_available = true;
@@ -367,10 +368,16 @@ void Resources::update_theme_settings(const DRWContext *ctx, const State &state)
   ui::theme::get_color_shade_4fv(
       state.rv3d ? TH_GRID_MAJOR : TH_GRID, is_bg_darker ? 20 : -10, gb.colors.grid_emphasis);
 
-  /* Grid Axis */
-  ui::theme::get_color_blend_shade_4fv(TH_GRID, TH_AXIS_X, 0.85f, -20, gb.colors.grid_axis_x);
-  ui::theme::get_color_blend_shade_4fv(TH_GRID, TH_AXIS_Y, 0.85f, -20, gb.colors.grid_axis_y);
-  ui::theme::get_color_blend_shade_4fv(TH_GRID, TH_AXIS_Z, 0.85f, -20, gb.colors.grid_axis_z);
+  /* Grid axes */
+  bTheme *btheme = ui::theme::theme_get();
+  const float grid_axis_brightness = btheme->space_view3d.grid_axis_brightness;
+  const int grid_axis_offset_i = static_cast<int>((grid_axis_brightness * 2.0f - 1.0f) * 255.0f);
+  ui::theme::get_color_blend_shade_4fv(
+      TH_GRID, TH_AXIS_X, 0.85, grid_axis_offset_i, gb.colors.grid_axis_x);
+  ui::theme::get_color_blend_shade_4fv(
+      TH_GRID, TH_AXIS_Y, 0.85, grid_axis_offset_i, gb.colors.grid_axis_y);
+  ui::theme::get_color_blend_shade_4fv(
+      TH_GRID, TH_AXIS_Z, 0.85, grid_axis_offset_i, gb.colors.grid_axis_z);
 
   ui::theme::get_color_shade_alpha_4fv(TH_TRANSFORM, 0, -80, gb.colors.deselect);
   ui::theme::get_color_shade_alpha_4fv(TH_WIRE, 0, -30, gb.colors.outline);
@@ -827,6 +834,8 @@ void Instance::draw_v2d(Manager &manager, View &view)
   grid.draw_line(resources.overlay_output_fb, manager, view);
   regular.mesh_uvs.draw(resources.overlay_output_fb, manager, view);
 
+  draw_text(resources.overlay_output_color_only_fb);
+
   cursor.draw_output(resources.overlay_output_color_only_fb, manager, view);
 }
 
@@ -869,9 +878,12 @@ void Instance::draw_v3d(Manager &manager, View &view)
     layer.curves.draw_line(framebuffer, manager, view);
   };
 
+  auto draw_line_only = [&](OverlayLayer &layer, Framebuffer &framebuffer) {
+    layer.meshes.draw_line_only(framebuffer, manager, view);
+  };
+
   auto draw_color_only = [&](OverlayLayer &layer, Framebuffer &framebuffer) {
     layer.light_probes.draw_color_only(framebuffer, manager, view);
-    layer.meshes.draw_color_only(framebuffer, manager, view);
     layer.curves.draw_color_only(framebuffer, manager, view);
     layer.grease_pencil.draw_color_only(framebuffer, manager, view);
   };
@@ -963,6 +975,8 @@ void Instance::draw_v3d(Manager &manager, View &view)
 
     draw_color_only(regular, resources.overlay_color_only_fb);
     draw_color_only(infront, resources.overlay_color_only_fb);
+    draw_line_only(regular, resources.overlay_line_only_fb);
+    draw_line_only(infront, resources.overlay_line_only_fb);
 
     /* TODO(fclem): Split overlay and rename draw functions. */
     regular.empties.draw_in_front_images(resources.overlay_color_only_fb, manager, view);

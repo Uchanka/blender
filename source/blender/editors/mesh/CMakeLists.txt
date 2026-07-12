@@ -35,12 +35,14 @@ set(SRC
   editmesh_path.cc
   editmesh_polybuild.cc
   editmesh_preselect_edgering.cc
+  editmesh_relax_edge_loops.cc
   editmesh_preselect_elem.cc
   editmesh_rip.cc
   editmesh_rip_edge.cc
   editmesh_select.cc
   editmesh_select_similar.cc
   editmesh_set_sharpness_by_angle.cc
+  editmesh_space_edge_loops_evenly.cc
   editmesh_tools.cc
   editmesh_undo.cc
   editmesh_utils.cc

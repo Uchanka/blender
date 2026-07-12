@@ -38,9 +38,6 @@ struct ShaderCreateInfo;
  * This makes sure the GPUVertexFormat name buffer does not overflow. */
 constexpr static int GPU_MAX_ATTR = 15;
 
-/* Determined by the maximum uniform buffer size divided by chunk size. */
-constexpr static int GPU_MAX_UNIFORM_ATTR = 8;
-
 /* -------------------------------------------------------------------- */
 /** \name Creation
  * \{ */
@@ -191,6 +188,7 @@ const char *GPU_shader_get_name(gpu::Shader *shader);
 int GPU_shader_get_ubo_binding(gpu::Shader *shader, const char *name);
 int GPU_shader_get_ssbo_binding(gpu::Shader *shader, const char *name);
 int GPU_shader_get_sampler_binding(gpu::Shader *shader, const char *name);
+int GPU_shader_get_tlas_binding(gpu::Shader *shader, const char *name);
 
 /**
  * Returns uniform location.

@@ -18,10 +18,10 @@
 
 #include "ED_screen.hh"
 
-#include "BLI_listbase.h"
-#include "BLI_string.h"
-#include "BLI_string_utf8.h"
-#include "BLI_utildefines.h"
+#include "BLI_listbase.hh"
+#include "BLI_string.hh"
+#include "BLI_string_utf8.hh"
+#include "BLI_utildefines.hh"
 
 #include "BLT_translation.hh"
 
@@ -427,7 +427,7 @@ static bool add_collection_search_item(CollItemSearch &cis,
                          cis.name,
                          cis.data,
                          cis.iconid,
-                         cis.has_sep_char ? int(BUT_HAS_SEP_CHAR) : 0,
+                         cis.has_sep_char ? int64_t(BUT_HAS_SEP_CHAR) : 0,
                          name_prefix_offset);
 }
 
@@ -635,13 +635,13 @@ int icon_from_id(const ID *id)
 int icon_from_report_type(int type)
 {
   if (type & RPT_ERROR_ALL) {
-    return ICON_CANCEL;
+    return ICON_STATUS_ERROR_FILLED;
   }
   if (type & RPT_WARNING_ALL) {
-    return ICON_ERROR;
+    return ICON_STATUS_WARNING_FILLED;
   }
   if (type & RPT_INFO_ALL) {
-    return ICON_INFO;
+    return ICON_STATUS_INFO_FILLED;
   }
   if (type & RPT_DEBUG_ALL) {
     return ICON_SYSTEM;
@@ -652,7 +652,7 @@ int icon_from_report_type(int type)
   if (type & RPT_OPERATOR) {
     return ICON_CHECKMARK;
   }
-  return ICON_INFO;
+  return ICON_STATUS_INFO_FILLED;
 }
 
 int icon_colorid_from_report_type(int type)
@@ -907,7 +907,7 @@ void butstore_free(Block *block, ButStore *bs_handle)
     block = bs_handle->block;
   }
 
-  BLI_freelistN(&bs_handle->items);
+  bs_handle->items.free_no_destruct();
   BLI_assert(BLI_findindex(&block->butstore, bs_handle) != -1);
   BLI_remlink(&block->butstore, bs_handle);
 
@@ -988,7 +988,7 @@ void butstore_update(Block *block)
     }
   }
 
-  if (LIKELY(block->butstore.first == nullptr)) {
+  if (block->butstore.first == nullptr) [[likely]] {
     return;
   }
 

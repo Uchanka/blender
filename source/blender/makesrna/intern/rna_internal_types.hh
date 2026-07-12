@@ -26,7 +26,6 @@ struct BlenderRNA;
 struct CollectionPropertyIterator;
 struct ContainerRNA;
 struct FunctionRNA;
-struct GHash;
 struct IDOverrideLibrary;
 struct IDOverrideLibraryPropertyOperation;
 struct IDProperty;
@@ -322,6 +321,12 @@ struct RNAPropertyOverrideApplyContext {
   IDOverrideLibrary *liboverride = nullptr;
   IDOverrideLibraryProperty *liboverride_property = nullptr;
   IDOverrideLibraryPropertyOperation *liboverride_operation = nullptr;
+  /**
+   * Previous liboverride property & operation. Only set when applying a generic 'REPLACE'
+   * operation to revert changes in the liboverride to the reference data, null otherwise.
+   */
+  IDOverrideLibraryProperty *liboverride_removed_property = nullptr;
+  IDOverrideLibraryPropertyOperation *liboverride_removed_operation = nullptr;
 
   /* TODO: Add more refined/descriptive result report? */
 };
@@ -630,6 +635,9 @@ struct PointerPropertyRNA : public PropertyRNA {
   PropPointerTypeFunc type_fn;
   /** unlike operators, 'set' can still run if poll fails, used for filtering display. */
   PropPointerPollFunc poll;
+
+  /** Default ID data-block UID, only for properties registered at runtime. */
+  uint32_t id_default_session_uid;
 
   StructRNA *pointer_type;
 };

@@ -15,17 +15,18 @@
 #include "DNA_scene_types.h"
 #include "DNA_space_types.h"
 
-#include "BLI_bitmap.h"
-#include "BLI_listbase.h"
-#include "BLI_math_color.h"
-#include "BLI_math_color_blend.h"
-#include "BLI_stack.h"
-#include "BLI_task.h"
+#include "BLI_bitmap.hh"
+#include "BLI_listbase.hh"
+#include "BLI_math_color_blend.hh"
+#include "BLI_math_color_c.hh"
+#include "BLI_stack_c.hh"
+#include "BLI_task_c.hh"
 
 #include "BKE_brush.hh"
 #include "BKE_colorband.hh"
 #include "BKE_context.hh"
 #include "BKE_image.hh"
+#include "BKE_image_gpu.hh"
 #include "BKE_paint.hh"
 #include "BKE_paint_types.hh"
 #include "BKE_report.hh"
@@ -405,7 +406,8 @@ static ImBuf *brush_painter_imbuf_new(
   float brush_rgb[3];
 
   /* allocate image buffer */
-  ImBuf *ibuf = IMB_allocImBuf(size, size, (is_float) ? IB_float_data : IB_byte_data);
+  ImBuf *ibuf = IMB_allocImBuf(
+      size, size, (is_float) ? ImBufFlags::FloatData : ImBufFlags::ByteData);
 
   /* get brush color */
   if (brush->image_brush_type == IMAGE_PAINT_BRUSH_TYPE_DRAW) {
@@ -523,8 +525,8 @@ static void brush_painter_imbuf_update(BrushPainter *painter,
   float *ibuf_float_data = ibuf->float_data_for_write();
   uchar *texibuf_byte_data = texibuf->byte_data_for_write();
   float *texibuf_float_data = texibuf->float_data_for_write();
-  const uchar *oldtexibuf_byte_data = oldtexibuf->byte_data();
-  const float *oldtexibuf_float_data = oldtexibuf->float_data();
+  const uchar *oldtexibuf_byte_data = (oldtexibuf) ? oldtexibuf->byte_data() : nullptr;
+  const float *oldtexibuf_float_data = (oldtexibuf) ? oldtexibuf->float_data() : nullptr;
   for (y = origy; y < h; y++) {
     for (x = origx; x < w; x++) {
       /* sample texture and multiply with brush color */
@@ -615,10 +617,10 @@ static void brush_painter_imbuf_partial_update(BrushPainter *painter,
 {
   BrushPainterCache *cache = &tile->cache;
   ImBuf *oldtexibuf, *ibuf;
-  int imbflag, destx, desty, srcx, srcy, w, h, x1, y1, x2, y2;
+  int destx, desty, srcx, srcy, w, h, x1, y1, x2, y2;
 
   /* create brush image buffer if it didn't exist yet */
-  imbflag = (cache->is_float) ? IB_float_data : IB_byte_data;
+  ImBufFlags imbflag = (cache->is_float) ? ImBufFlags::FloatData : ImBufFlags::ByteData;
   if (!cache->ibuf) {
     cache->ibuf = IMB_allocImBuf(diameter, diameter, imbflag);
   }
@@ -1179,7 +1181,14 @@ static ImBuf *paint_2d_lift_clone(ImBuf *ibuf, ImBuf *ibufb, const int *pos)
   /* NOTE: #allocImbuf returns zeroed memory, so regions outside image will
    * have zero alpha, and hence not be blended onto the image */
   int w = ibufb->x, h = ibufb->y, destx = 0, desty = 0, srcx = pos[0], srcy = pos[1];
-  ImBuf *clonebuf = IMB_allocImBuf(w, h, ibufb->flags);
+  ImBufFlags ibflags = ibufb->flags;
+  if (ibufb->byte_data()) {
+    ibflags |= ImBufFlags::ByteData;
+  }
+  if (ibufb->float_data()) {
+    ibflags |= ImBufFlags::FloatData;
+  }
+  ImBuf *clonebuf = IMB_allocImBuf(w, h, ibflags);
   clonebuf->color_mode = ibufb->color_mode;
 
   IMB_rectclip(clonebuf, ibuf, &destx, &desty, &srcx, &srcy, &w, &h);
@@ -1239,7 +1248,7 @@ static void paint_2d_do_making_brush(ImagePaintState *s,
                                      int tileh)
 {
   ImBuf tmpbuf;
-  IMB_initImBuf(&tmpbuf, ED_IMAGE_UNDO_TILE_SIZE, ED_IMAGE_UNDO_TILE_SIZE, 0);
+  IMB_initImBuf(&tmpbuf, ED_IMAGE_UNDO_TILE_SIZE, ED_IMAGE_UNDO_TILE_SIZE, ImBufFlags::Zero);
 
   PaintTileMap *undo_tiles = ED_image_paint_tile_map_get();
 
@@ -1250,19 +1259,15 @@ static void paint_2d_do_making_brush(ImagePaintState *s,
       int origx = region->destx - tx * ED_IMAGE_UNDO_TILE_SIZE;
       int origy = region->desty - ty * ED_IMAGE_UNDO_TILE_SIZE;
 
-      if (tile->canvas->float_data()) {
-        IMB_assign_float_buffer(
-            &tmpbuf,
-            static_cast<float *>(ED_image_paint_tile_find(
-                undo_tiles, s->image, tile->canvas, &tile->iuser, tx, ty, &mask, false)),
-            IB_DO_NOT_TAKE_OWNERSHIP);
-      }
-      else {
-        IMB_assign_byte_buffer(
-            &tmpbuf,
-            static_cast<uchar *>(ED_image_paint_tile_find(
-                undo_tiles, s->image, tile->canvas, &tile->iuser, tx, ty, &mask, false)),
-            IB_DO_NOT_TAKE_OWNERSHIP);
+      if (const ImBuf *data = ED_image_paint_tile_find(
+              undo_tiles, s->image, tile->canvas, &tile->iuser, tx, ty, &mask, false))
+      {
+        if (tile->canvas->float_data()) {
+          tmpbuf.float_buffer = data->float_buffer;
+        }
+        else {
+          tmpbuf.byte_buffer = data->byte_buffer;
+        }
       }
 
       IMB_rectblend(tile->canvas,
@@ -1376,8 +1381,7 @@ static int paint_2d_op(void *state,
                              region[a].destx,
                              region[a].desty,
                              region[a].width,
-                             region[a].height,
-                             true);
+                             region[a].height);
 
     if (s->do_masking) {
       /* masking, find original pixels tiles from undo buffer to composite over */
@@ -1577,7 +1581,7 @@ void paint_2d_stroke(void *ps,
 
     ImBuf *ibuf = tile->canvas;
 
-    const bool is_data = ibuf->colormanage_flag & IMB_COLORMANAGE_IS_DATA;
+    const bool is_data = ibuf->colorspace_is_data();
     const bool is_float = (ibuf->float_data() != nullptr);
     const ColorSpace *byte_colorspace = (is_float || is_data) ? nullptr :
                                                                 ibuf->byte_buffer.colorspace;
@@ -1638,7 +1642,7 @@ void *paint_2d_new_stroke(bContext *C, wmOperator *op, const BrushStrokeMode mod
     return nullptr;
   }
 
-  s->num_tiles = BLI_listbase_count(&s->image->tiles);
+  s->num_tiles = s->image->tiles.count();
   s->tiles = MEM_new_array<ImagePaintTile>(s->num_tiles, __func__);
   for (int i = 0; i < s->num_tiles; i++) {
     s->tiles[i].iuser = sima->iuser;
@@ -1728,7 +1732,7 @@ void paint_2d_redraw(const bContext *C, void *ps, bool final)
 
   if (final) {
     if (s->image && !(s->sima && s->sima->lock)) {
-      BKE_image_free_gputextures(s->image);
+      BKE_image_partial_update_mark_full_update(s->image);
     }
 
     /* compositor listener deals with updating */
@@ -1898,7 +1902,7 @@ void paint_2d_bucket_fill(const bContext *C,
 
   if (!mouse_final || !br) {
     /* first case, no image UV, fill the whole image */
-    ED_imapaint_dirty_region(ima, ibuf, iuser, 0, 0, ibuf->x, ibuf->y, false);
+    ED_imapaint_dirty_region(ima, ibuf, iuser, 0, 0, ibuf->x, ibuf->y);
 
     if (do_float) {
       float *float_data = ibuf->float_data_for_write();
@@ -1942,7 +1946,7 @@ void paint_2d_bucket_fill(const bContext *C,
     }
 
     /* change image invalidation method later */
-    ED_imapaint_dirty_region(ima, ibuf, iuser, 0, 0, ibuf->x, ibuf->y, false);
+    ED_imapaint_dirty_region(ima, ibuf, iuser, 0, 0, ibuf->x, ibuf->y);
 
     stack = BLI_stack_new(sizeof(size_t), __func__);
     touched = BLI_BITMAP_NEW(size_t(ibuf->x) * ibuf->y, "bucket_fill_bitmap");
@@ -2090,7 +2094,7 @@ void paint_2d_gradient_fill(
   do_float = (ibuf->float_data() != nullptr);
 
   /* this will be substituted by something else when selection is available */
-  ED_imapaint_dirty_region(ima, ibuf, iuser, 0, 0, ibuf->x, ibuf->y, false);
+  ED_imapaint_dirty_region(ima, ibuf, iuser, 0, 0, ibuf->x, ibuf->y);
 
   if (do_float) {
     float *float_data = ibuf->float_data_for_write();

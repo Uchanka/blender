@@ -20,8 +20,8 @@
 
 #include "DNA_screen_types.h"
 
-#include "BLI_bitmap_draw_2d.h"
-#include "BLI_math_vector.h"
+#include "BLI_bitmap_draw_2d.hh"
+#include "BLI_math_vector_c.hh"
 
 #include "BKE_colorband.hh"
 #include "BKE_context.hh"
@@ -95,7 +95,7 @@ static bool eyedropper_colorband_init(bContext *C, wmOperator *op)
       /* Set this to a sub-member of the property to trigger an update. */
       rna_update_ptr = ptr;
       rna_update_prop = &rna_ColorRamp_color_mode;
-      is_undo = RNA_struct_undo_check(ptr.type);
+      is_undo = RNA_property_undo_check(rna_update_prop, ptr.type);
     }
   }
 

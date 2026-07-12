@@ -4,12 +4,11 @@
 
 #pragma once
 
-#include "BLI_string_ref.hh"
-#include "BLI_vector_set.hh"
-
 #include "DNA_node_types.h"
 
 #include "BKE_node.hh"
+
+#include "NOD_geometry_nodes_warning.hh"
 
 #include "COM_context.hh"
 #include "COM_operation.hh"
@@ -32,13 +31,10 @@ class NodeOperation : public Operation {
  private:
   /* The node that this operation represents. */
   const bNode &node_;
-  /* A node instance key that identifies the node instance in the nested node groups path. */
-  bNodeInstanceKey instance_key_ = bke::NODE_INSTANCE_KEY_NONE;
   /* The compute context where this node operation is executing. */
   const ComputeContext *compute_context_ = nullptr;
-  /* A map that associates each node instance identified by its node instance key to its node
-   * preview. This could be nullptr if node previews are not needed. */
-  Map<bNodeInstanceKey, bke::bNodePreview> *node_previews_ = nullptr;
+  /* False if node previews are not needed and true otherwise. */
+  bool needs_node_previews_ = false;
 
  public:
   /* Populate the output results based on the node outputs and populate the input descriptors based
@@ -55,21 +51,19 @@ class NodeOperation : public Operation {
    * output corresponding to each result. The node execution schedule is given as an input. */
   void compute_results_reference_counts(const Schedule &schedule);
 
-  /* Setter and getter for instance_key_. */
-  void set_instance_key(const bNodeInstanceKey &instance_key);
-  const bNodeInstanceKey &get_instance_key() const;
-
   /* Setter and getter for compute_context_. */
   void set_compute_context(const ComputeContext &compute_context);
   const ComputeContext &get_compute_context() const;
 
-  /* Setter and getter for node_previews_. */
-  void set_node_previews(Map<bNodeInstanceKey, bke::bNodePreview> *node_previews);
-  Map<bNodeInstanceKey, bke::bNodePreview> *get_node_previews();
+  /* Setter for needs_node_previews_. */
+  void set_needs_node_previews(const bool needed);
 
  protected:
-  /* Compute a node preview using the result returned from the get_preview_result method. */
-  void compute_preview() override;
+  /* Add a warning of the given type and message to the node. */
+  void add_warning(nodes::NodeWarningType type, std::string message);
+
+  /* Log the values for the inputs and outputs of the node as well as its image preview. */
+  void log_data() override;
 
   /* Returns a reference to the node that this operation represents. */
   const bNode &node() const;

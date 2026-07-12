@@ -21,12 +21,12 @@
 #endif
 #include "MEM_guardedalloc.h"
 
-#include "BLI_math_matrix.h"
-#include "BLI_math_rotation.h"
-#include "BLI_rect.h"
+#include "BLI_math_matrix_c.hh"
+#include "BLI_math_rotation_c.hh"
+#include "BLI_rect.hh"
 #include "BLI_set.hh"
-#include "BLI_string_utf8.h"
-#include "BLI_utildefines.h"
+#include "BLI_string_utf8.hh"
+#include "BLI_utildefines.hh"
 
 #include "BLT_translation.hh"
 
@@ -44,7 +44,7 @@
 #include "DNA_space_types.h"
 #include "DNA_world_types.h"
 
-#include "BKE_animsys.h"
+#include "BKE_animsys.hh"
 #include "BKE_armature.hh"
 #include "BKE_brush.hh"
 #include "BKE_collection.hh"
@@ -70,7 +70,7 @@
 #include "BKE_texture.h"
 #include "BKE_world.h"
 
-#include "BLI_math_vector.h"
+#include "BLI_math_vector_c.hh"
 
 #include "DEG_depsgraph.hh"
 #include "DEG_depsgraph_build.hh"
@@ -104,7 +104,7 @@ namespace blender {
 
 #ifndef NDEBUG
 /* Used for database init assert(). */
-#  include "BLI_threads.h"
+#  include "BLI_threads.hh"
 #endif
 
 static void icon_copy_rect(const ImBuf *ibuf, uint w, uint h, uint *rect);
@@ -366,11 +366,11 @@ static World *preview_get_localized_world(ShaderPreview *sp, World *world)
   return sp->worldcopy;
 }
 
-World *ED_preview_prepare_world_simple(Main *pr_main)
+World *ED_preview_prepare_world_simple(Main *bmain)
 {
   using namespace blender::bke;
 
-  World *world = BKE_world_add(pr_main, "SimpleWorld");
+  World *world = BKE_world_add(bmain, "SimpleWorld");
   bNodeTree *ntree = world->nodetree;
 
   bNode *background = node_add_node(nullptr, *ntree, "ShaderNodeBackground"_ustr);
@@ -697,7 +697,7 @@ static bool ed_preview_draw_rect(
 
   RE_AcquireResultImageViews(re, &rres);
 
-  if (!BLI_listbase_is_empty(&rres.views)) {
+  if (!rres.views.is_empty()) {
     /* material preview only needs monoscopy (view 0) */
     rv = RE_RenderViewGetById(&rres, 0);
   }
@@ -920,7 +920,7 @@ static void object_preview_render(const PreviewImage *prv_img,
                                                       DEG_get_evaluated(depsgraph, scene->camera),
                                                       prv_img->w[icon_size],
                                                       prv_img->h[icon_size],
-                                                      IB_byte_data,
+                                                      ImBufFlags::ByteData,
                                                       V3D_OFSDRAW_OVERRIDE_SCENE_SETTINGS,
                                                       R_ALPHAPREMUL,
                                                       nullptr,
@@ -1038,7 +1038,7 @@ static void action_preview_render(const PreviewImage *prv_img,
                                                       camera_eval,
                                                       prv_img->w[icon_size],
                                                       prv_img->h[icon_size],
-                                                      IB_byte_data,
+                                                      ImBufFlags::ByteData,
                                                       V3D_OFSDRAW_NONE,
                                                       R_ADDSKY,
                                                       nullptr,
@@ -1100,7 +1100,7 @@ static void scene_preview_render(const PreviewImage *prv_img,
                                                       camera_eval,
                                                       prv_img->w[icon_size],
                                                       prv_img->h[icon_size],
-                                                      IB_byte_data,
+                                                      ImBufFlags::ByteData,
                                                       V3D_OFSDRAW_NONE,
                                                       R_ADDSKY,
                                                       nullptr,
@@ -1725,7 +1725,7 @@ class PreviewLoadJob {
   std::mutex todo_queue_mutex_;
 
   /** Push the RequestedPreview to the 'todo' queue, ensuring it is only queued once. */
-  void todo_queue_push(RequestedPreview *preview);
+  void todo_queue_push(RequestedPreview *request);
   /** Pop an item off the 'todo' queue, waiting at most wait_time_msec for an item to appear. */
   RequestedPreview *todo_queue_pop(int wait_time_msec);
 
@@ -2146,7 +2146,7 @@ bool ED_preview_use_image_size(const PreviewImage *preview, eIconSizes size)
   return size == ICON_SIZE_PREVIEW && preview->runtime->deferred_loading_data;
 }
 
-bool ED_preview_id_is_supported(const ID *id, const char **r_disabled_hint)
+bool ED_preview_id_render_is_supported(const ID *id, const char **r_disabled_hint)
 {
   if (id == nullptr) {
     return false;
@@ -2171,9 +2171,23 @@ bool ED_preview_id_is_supported(const ID *id, const char **r_disabled_hint)
                 RPT_("Scenes without a camera do not support previews")};
       case ID_BR:
         return {false, RPT_("Brushes do not support automatic previews")};
+      case ID_MA:
+        return {true, ""};
+      case ID_TE:
+        return {true, ""};
+      case ID_WO:
+        return {true, ""};
+      case ID_LA:
+        return {true, ""};
+      case ID_IM:
+        return {true, ""};
+      case ID_AC:
+        return {true, ""};
+      case ID_SCR:
+        return {false, RPT_("Screens do not support automatic previews")};
       default:
-        return {BKE_previewimg_id_get_p(id) != nullptr,
-                RPT_("Data-block type does not support automatic previews")};
+        BLI_assert(!BKE_previewimg_id_get_p(id));
+        return {false, RPT_("Data-block type does not support automatic previews")};
     }
   }();
 
@@ -2195,6 +2209,11 @@ void ED_preview_icon_render(
     }
 
     PreviewLoadJob::load_jobless(prv_img, icon_size);
+    return;
+  }
+
+  /* Check if the ID supports the auto-generated previews at all. */
+  if (!ED_preview_id_render_is_supported(id)) {
     return;
   }
 
@@ -2250,7 +2269,7 @@ void ED_preview_icon_job(
   }
 
   /* Check if the ID supports the auto-generated previews at all. */
-  if (!ED_preview_id_is_supported(id)) {
+  if (!ED_preview_id_render_is_supported(id)) {
     return;
   }
 

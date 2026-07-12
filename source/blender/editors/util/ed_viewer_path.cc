@@ -17,8 +17,8 @@
 #include "BKE_viewer_path.hh"
 #include "BKE_workspace.hh"
 
-#include "BLI_listbase.h"
-#include "BLI_string.h"
+#include "BLI_listbase.hh"
+#include "BLI_string.hh"
 #include "BLI_vector.hh"
 
 #include "DNA_modifier_types.h"
@@ -44,7 +44,9 @@ ViewerPathElem *viewer_path_elem_for_compute_context(const ComputeContext &compu
     elem->base.ui_name = BLI_strdup(BKE_id_name(*elem->id));
     return &elem->base;
   }
-  if (const auto *context = dynamic_cast<const bke::ModifierComputeContext *>(&compute_context)) {
+  if (const auto *context = dynamic_cast<const bke::GeometryNodesModifierComputeContext *>(
+          &compute_context))
+  {
     ModifierViewerPathElem *elem = BKE_viewer_path_elem_new_modifier();
     elem->modifier_uid = context->modifier_uid();
     if (const NodesModifierData *nmd = context->nmd()) {
@@ -201,7 +203,7 @@ void activate_geometry_node(Main &bmain,
 
 Object *parse_object_only(const ViewerPath &viewer_path)
 {
-  if (BLI_listbase_count(&viewer_path.path) != 1) {
+  if (viewer_path.path.count() != 1) {
     return nullptr;
   }
   const ViewerPathElem *elem = static_cast<ViewerPathElem *>(viewer_path.path.first);
@@ -408,7 +410,7 @@ bool exists_geometry_nodes_viewer(const ViewerPathForGeometryNodesViewer &parsed
 UpdateActiveGeometryNodesViewerResult update_active_geometry_nodes_viewer(const bContext &C,
                                                                           ViewerPath &viewer_path)
 {
-  if (BLI_listbase_is_empty(&viewer_path.path)) {
+  if (viewer_path.path.is_empty()) {
     return UpdateActiveGeometryNodesViewerResult::NotActive;
   }
   const ViewerPathElem *last_elem = static_cast<ViewerPathElem *>(viewer_path.path.last);
@@ -531,7 +533,8 @@ bNode *find_geometry_nodes_viewer(const ViewerPath &viewer_path, SpaceNode &snod
     }
     case VIEWER_PATH_ELEM_TYPE_MODIFIER: {
       const auto &elem = reinterpret_cast<const ModifierViewerPathElem &>(elem_generic);
-      return &compute_context_cache.for_modifier(parent_compute_context, elem.modifier_uid);
+      return &compute_context_cache.for_geometry_nodes_modifier(parent_compute_context,
+                                                                elem.modifier_uid);
     }
     case VIEWER_PATH_ELEM_TYPE_GROUP_NODE: {
       const auto &elem = reinterpret_cast<const GroupNodeViewerPathElem &>(elem_generic);

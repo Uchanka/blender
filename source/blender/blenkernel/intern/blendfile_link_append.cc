@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "BKE_node_tree_update.hh"
 #include "CLG_log.h"
 
 #include "MEM_guardedalloc.h"
@@ -27,14 +28,14 @@
 #include "DNA_space_types.h"
 #include "DNA_userdef_types.h"
 
-#include "BLI_linklist.h"
-#include "BLI_listbase.h"
-#include "BLI_math_vector.h"
+#include "BLI_linklist.hh"
+#include "BLI_listbase.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_set.hh"
 #include "BLI_stack.hh"
-#include "BLI_string.h"
+#include "BLI_string.hh"
 #include "BLI_string_ref.hh"
-#include "BLI_utildefines.h"
+#include "BLI_utildefines.hh"
 #include "BLI_vector.hh"
 
 #include "BLT_translation.hh"
@@ -374,6 +375,16 @@ void BKE_blendfile_link_append_context_finalize(BlendfileLinkAppendContext *lapp
                   BlendfileLinkAppendContext::ProcessStage::Instantiating));
   lapp_context->process_stage = BlendfileLinkAppendContext::ProcessStage::Done;
 
+  /* Tag node trees to update generated RNA with potentially updated session uid values from
+   * data-block defaults in interfaces. This is only necessary because RNA types were already
+   * generated before these data-blocks were local; theoretically that shouldn't be necessary. */
+  for (ID *id : lapp_context->new_id_to_item.keys()) {
+    if (GS(id->name) == ID_NT) {
+      bNodeTree *ntree = id_cast<bNodeTree *>(id);
+      BKE_ntree_update_tag_all(ntree);
+    }
+  }
+
   BKE_main_ensure_invariants(*lapp_context->params->bmain);
 
   PointerRNA ctx_ptr = RNA_pointer_create_discrete(nullptr, RNA_BlendImportContext, lapp_context);
@@ -477,20 +488,31 @@ static void loose_data_instantiate_ensure_active_collection(
   /* Find or add collection as needed. When `active_collection` is non-null, it is assumed to be
    * editable. */
   if (instantiate_context->active_collection == nullptr) {
+    auto add_instantiating_collection =
+        [&bmain, &lapp_context](Collection *parent_collection) -> Collection * {
+      if (lapp_context->params->flag & FILE_LINK) {
+        return BKE_collection_add(bmain, parent_collection, DATA_("Linked Data"));
+      }
+      return BKE_collection_add(bmain, parent_collection, DATA_("Appended Data"));
+    };
+
     if (lapp_context->params->flag & FILE_ACTIVE_COLLECTION) {
       LayerCollection *lc = BKE_layer_collection_get_active(view_layer);
       instantiate_context->active_collection = BKE_collection_parent_editable_find_recursive(
           view_layer, lc->collection);
+      /* In all 'sane' cases, `BKE_collection_parent_editable_find_recursive` should find a valid
+       * parent collection. This is only a minimal backup in case the link/append operation happens
+       * in a very weird, broken context. */
+      if (!instantiate_context->active_collection) {
+        instantiate_context->active_collection = add_instantiating_collection(nullptr);
+      }
     }
     else {
-      if (lapp_context->params->flag & FILE_LINK) {
-        instantiate_context->active_collection = BKE_collection_add(
-            bmain, scene->master_collection, DATA_("Linked Data"));
-      }
-      else {
-        instantiate_context->active_collection = BKE_collection_add(
-            bmain, scene->master_collection, DATA_("Appended Data"));
-      }
+      Collection *parent_collection = BKE_collection_is_content_editable(
+                                          scene->master_collection) ?
+                                          scene->master_collection :
+                                          nullptr;
+      instantiate_context->active_collection = add_instantiating_collection(parent_collection);
     }
   }
 }
@@ -535,7 +557,7 @@ static void loose_data_instantiate_object_base_instance_init(Main *bmain,
 }
 
 /* Tag obdata that actually need to be instantiated (those referenced by an object do not, since
- * the object will be instantiated instead if needed. */
+ * the object will be instantiated instead if needed). */
 static void loose_data_instantiate_obdata_preprocess(
     LooseDataInstantiateContext *instantiate_context)
 {
@@ -1127,7 +1149,8 @@ static int foreach_libblock_append_add_dependencies_callback(LibraryIDLinkCallba
       static_cast<BlendfileLinkAppendContextCallBack *>(cb_data->user_data);
 
   /* NOTE: In append case, all dependencies are needed in the items list, to cover potential
-   * complex cases (e.g. linked data from another library referencing other IDs from the  */
+   * complex cases (e.g. linked data from another library referencing other IDs from the main
+   * appended library). */
 
   BlendfileLinkAppendContextItem *item = data->lapp_context->new_id_to_item.lookup_default(
       id, nullptr);

@@ -11,13 +11,13 @@
 #include "BKE_appdir.hh"
 #include "BKE_global.hh"
 
-#include "BLI_fileops.h"
+#include "BLI_fileops.hh"
 #include "BLI_path_utils.hh"
-#include "BLI_string.h"
-#include "BLI_time.h"
+#include "BLI_string.hh"
+#include "BLI_time.hh"
 #include "BLI_vector.hh"
 
-#include "BLI_system.h"
+#include "BLI_system.hh"
 #include BLI_SYSTEM_PID_H
 
 #include "GPU_capabilities.hh"
@@ -495,14 +495,7 @@ static void print_resource(std::ostream &os,
                            const ShaderCreateInfo::Resource &res,
                            const ShaderCreateInfo &info)
 {
-  if (info.auto_resource_location_ &&
-      res.bind_type == ShaderCreateInfo::Resource::BindType::SAMPLER)
   {
-    /* Skip explicit binding location for samplers when not needed, since drivers can usually
-     * handle more sampler declarations this way (as long as they're not actually used by the
-     * shader). See #105661. */
-  }
-  else if (GLContext::explicit_location_support) {
     os << "layout(binding = " << res.slot;
     if (res.bind_type == ShaderCreateInfo::Resource::BindType::IMAGE) {
       os << ", " << to_string(res.image.format);
@@ -514,9 +507,6 @@ static void print_resource(std::ostream &os,
       os << ", std430";
     }
     os << ") ";
-  }
-  else if (res.bind_type == ShaderCreateInfo::Resource::BindType::UNIFORM_BUFFER) {
-    os << "layout(std140) ";
   }
 
   switch (res.bind_type) {
@@ -541,6 +531,9 @@ static void print_resource(std::ostream &os,
       os << "buffer _";
       os << res.storagebuf.name.str_no_array() << " { ";
       os << info.buffer_typename(res.storagebuf.type_name) << " " << res.storagebuf.name << "; };";
+      break;
+    case ShaderCreateInfo::Resource::BindType::ACCELERATION_STRUCTURE:
+      BLI_assert_unreachable();
       break;
   }
 }
@@ -709,12 +702,7 @@ std::string GLShader::vertex_interface_declare(const ShaderCreateInfo &info) con
 
   /* Inputs. */
   for (const ShaderCreateInfo::VertIn &attr : info.vertex_inputs_) {
-    if (GLContext::explicit_location_support &&
-        /* Fix issue with AMDGPU-PRO + workbench_prepass_mesh_vert.glsl being quantized. */
-        GPU_type_matches(GPU_DEVICE_ATI, GPU_OS_ANY, GPU_DRIVER_OFFICIAL) == false)
-    {
-      ss << "layout(location = " << attr.index << ") ";
-    }
+    ss << "layout(location = " << attr.index << ") ";
     ss << "in " << to_string(attr.type) << " " << attr.name << ";\n";
   }
   /* Interfaces. */
@@ -1042,10 +1030,13 @@ bool GLShader::do_geometry_shader_injection(const shader::ShaderCreateInfo *info
   {
     return true;
   }
-  if (!GLContext::layered_rendering_support && flag_is_set(builtins, BuiltinBits::LAYER)) {
+  if (!GLContext::layered_rendering_support && !GLContext::vertex_shader_layer_support &&
+      flag_is_set(builtins, BuiltinBits::LAYER))
+  {
     return true;
   }
-  if (!GLContext::layered_rendering_support && flag_is_set(builtins, BuiltinBits::VIEWPORT_INDEX))
+  if (!GLContext::layered_rendering_support && !GLContext::vertex_shader_viewport_index_support &&
+      flag_is_set(builtins, BuiltinBits::VIEWPORT_INDEX))
   {
     return true;
   }
@@ -1078,6 +1069,12 @@ static StringRefNull glsl_patch_vertex_get()
     if (GLContext::layered_rendering_support) {
       ss << "#extension GL_ARB_shader_viewport_layer_array: enable\n";
     }
+    if (!GLContext::layered_rendering_support && GLContext::vertex_shader_layer_support) {
+      ss << "#extension GL_AMD_vertex_shader_layer: enable\n";
+    }
+    if (!GLContext::layered_rendering_support && GLContext::vertex_shader_viewport_index_support) {
+      ss << "#extension GL_AMD_vertex_shader_viewport_index: enable\n";
+    }
     if (GLContext::native_barycentric_support) {
       ss << "#extension GL_AMD_shader_explicit_vertex_parameter: enable\n";
     }
@@ -1107,9 +1104,6 @@ static StringRefNull glsl_patch_geometry_get()
     /* Version need to go first. */
     ss << "#version 430\n";
 
-    if (GLContext::layered_rendering_support) {
-      ss << "#extension GL_ARB_shader_viewport_layer_array: enable\n";
-    }
     if (GLContext::native_barycentric_support) {
       ss << "#extension GL_AMD_shader_explicit_vertex_parameter: enable\n";
     }
@@ -1137,14 +1131,15 @@ static StringRefNull glsl_patch_fragment_get()
     /* Version need to go first. */
     ss << "#version 430\n";
 
-    if (GLContext::layered_rendering_support) {
-      ss << "#extension GL_ARB_shader_viewport_layer_array: enable\n";
-    }
     if (GLContext::native_barycentric_support) {
       ss << "#extension GL_AMD_shader_explicit_vertex_parameter: enable\n";
     }
     if (GLContext::framebuffer_fetch_support) {
       ss << "#extension GL_EXT_shader_framebuffer_fetch: enable\n";
+    }
+    if (GLContext::derivative_control_support) {
+      ss << "#extension GL_ARB_derivative_control: enable\n";
+      ss << "#define GPU_ARB_derivative_control\n";
     }
     if (GPU_stencil_export_support()) {
       ss << "#extension GL_ARB_shader_stencil_export: enable\n";

@@ -7,7 +7,7 @@
 #include "evaluation_internal.hh"
 
 #include "BKE_action.hh"
-#include "BKE_animsys.h"
+#include "BKE_animsys.hh"
 #include "BKE_gtest_base.hh"
 #include "BKE_idtype.hh"
 #include "BKE_lib_id.hh"
@@ -19,7 +19,7 @@
 #include "RNA_access.hh"
 #include "RNA_prototypes.hh"
 
-#include "BLI_math_base.h"
+#include "BLI_math_base_c.hh"
 
 #include <optional>
 

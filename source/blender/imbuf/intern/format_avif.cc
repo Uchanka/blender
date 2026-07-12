@@ -31,7 +31,10 @@ bool imb_is_a_avif(const uchar *mem, size_t size)
   return imb_oiio_check(mem, size, "heif");
 }
 
-ImBuf *imb_load_avif(const uchar *mem, size_t size, int flags, ImFileColorSpace &r_colorspace)
+ImBuf *imb_load_avif(const uchar *mem,
+                     size_t size,
+                     ImBufFlags flags,
+                     ImFileColorSpace &r_colorspace)
 {
   ImageSpec config, spec;
   config.attribute("oiio:UnassociatedAlpha", 1);
@@ -80,16 +83,26 @@ static uchar *imb_save_avif_padding_workaround_begin(const ImBuf *ibuf,
     return nullptr;
   }
 
-  const size_t size_orig = size_t(ibuf->y) * ctx.mem_ystride;
-  const size_t size_pad = size_orig + (AVIF_BLOCK_SIZE * ctx.mem_xstride);
+  const size_t size_orig = size_t(ibuf->y) * (-ctx.mem_span.ystride());
+  const size_t size_pad = size_orig + (AVIF_BLOCK_SIZE * ctx.mem_span.xstride());
   const uchar *src_base = ibuf->byte_data();
 
   uchar *buf_padded = MEM_new_array_uninitialized<uchar>(size_pad, __func__);
   memcpy(buf_padded, src_base, size_orig);
 
   /* `mem_start` points to the last row (images are stored bottom-to-top). */
-  const size_t y_flip_offset = size_t(ibuf->y - 1) * ctx.mem_ystride;
-  ctx.mem_start = buf_padded + y_flip_offset;
+  const size_t y_flip_offset = size_t(ibuf->y - 1) * (-ctx.mem_span.ystride());
+  ctx.mem_span = image_span<const std::byte>(
+      reinterpret_cast<const std::byte *>(buf_padded + y_flip_offset),
+      ctx.mem_span.nchannels(),
+      ctx.mem_span.width(),
+      ctx.mem_span.height(),
+      ctx.mem_span.depth(),
+      ctx.mem_span.chanstride(),
+      ctx.mem_span.xstride(),
+      ctx.mem_span.ystride(),
+      ctx.mem_span.zstride(),
+      ctx.mem_span.chansize());
 
   return buf_padded;
 }
@@ -100,7 +113,7 @@ static void imb_save_avif_padding_workaround_end(const uchar *buf_padded)
   MEM_delete(buf_padded);
 }
 
-static std::tuple<WriteContext, ImageSpec, bool> prepare_save_avif(ImBuf *ibuf, int flags)
+static std::tuple<WriteContext, ImageSpec, bool> prepare_save_avif(ImBuf *ibuf, ImBufFlags flags)
 {
   const int bits_per_sample = (ibuf->foptions.flag & AVIF_10BIT) ? 10 :
                               (ibuf->foptions.flag & AVIF_12BIT) ? 12 :
@@ -117,9 +130,7 @@ static std::tuple<WriteContext, ImageSpec, bool> prepare_save_avif(ImBuf *ibuf, 
   ImageSpec file_spec = imb_create_write_spec(ctx, file_channels, data_format);
 
   /* Skip if the float buffer was managed already. */
-  if (use_float &&
-      (ibuf->float_buffer.colorspace || (ibuf->colormanage_flag & IMB_COLORMANAGE_IS_DATA)))
-  {
+  if (use_float && (ibuf->float_buffer.colorspace || ibuf->colorspace_is_data())) {
     file_spec.attribute("oiio:UnassociatedAlpha", 0);
   }
   else {
@@ -132,11 +143,11 @@ static std::tuple<WriteContext, ImageSpec, bool> prepare_save_avif(ImBuf *ibuf, 
   return {ctx, file_spec, use_float};
 }
 
-bool imb_save_avif(ImBuf *ibuf, const char *filepath, int flags)
+bool imb_save_avif(ImBuf *ibuf, const char *filepath, ImBufFlags flags)
 {
   auto [ctx, file_spec, use_float] = prepare_save_avif(ibuf, flags);
   const uchar *buf_padded = nullptr;
-  if (OIIO_VERSION_LESS(3, 2, 0)) {
+  if (OIIO_VERSION_LESS(3, 1, 12)) {
     buf_padded = imb_save_avif_padding_workaround_begin(ibuf, ctx, use_float);
   }
   bool result = imb_oiio_write(ctx, filepath, file_spec);
@@ -144,11 +155,11 @@ bool imb_save_avif(ImBuf *ibuf, const char *filepath, int flags)
   return result;
 }
 
-Vector<uint8_t> imb_save_buffer_avif(ImBuf *ibuf, int flags)
+Vector<uint8_t> imb_save_buffer_avif(ImBuf *ibuf, ImBufFlags flags)
 {
   auto [ctx, file_spec, use_float] = prepare_save_avif(ibuf, flags);
   const uchar *buf_padded = nullptr;
-  if (OIIO_VERSION_LESS(3, 2, 0)) {
+  if (OIIO_VERSION_LESS(3, 1, 12)) {
     buf_padded = imb_save_avif_padding_workaround_begin(ibuf, ctx, use_float);
   }
   Vector<uint8_t> result = imb_oiio_write_buffer(ctx, file_spec);
