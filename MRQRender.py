@@ -154,6 +154,61 @@ def signed_jitter(i: int, samples_per_frame: int, mode: str) -> Tuple[float, flo
     raise ValueError(mode)
 
 
+FLT_MAX = 3.402823466e38
+ 
+
+SUBPIXEL_OFFSETS: Tuple[Tuple[float, float], ...] = (
+    (-0.5, -0.5),
+    (-0.5,  0.5),
+    ( 0.5, -0.5),
+    ( 0.5,  0.5),
+)
+
+
+def to_1b2_offset(jitter: Tuple[float, float], j: int) -> Tuple[float, float]:
+    """对应 To1b2Offset。"""
+    ox, oy = SUBPIXEL_OFFSETS[j]
+    return ((jitter[0] - ox) * 0.5, (jitter[1] - oy) * 0.5)
+
+
+def _dist_squared(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    dx = a[0] - b[0]
+    dy = a[1] - b[1]
+    return dx * dx + dy * dy
+ 
+ 
+def get_optimal_seq_seg_indices(
+    ref_jitter: Tuple[float, float], length: int = 64
+) -> Tuple[int, int]:
+    min_dist = FLT_MAX
+    best_indices = (0, 0)
+    for seq_idx in range(length):
+        for seg_idx in range(4):
+            halt_jitter = signed_jitter(seq_idx, length, "halton23")
+            trial_jitter = to_1b2_offset(halt_jitter, seg_idx)
+            dist = _dist_squared(trial_jitter, ref_jitter)
+            if dist < min_dist:
+                min_dist = dist
+                best_indices = (seq_idx, seg_idx)
+    return best_indices
+
+
+def get_optimal_seg_index(
+    ref_jitter: Tuple[float, float], seq: int, length: int = 64
+) -> int:
+    """对应 GetOptimalSegIndex，固定 seq，只在 4 个 segment 里找最近的。"""
+    min_dist = FLT_MAX
+    best_index = 0
+    for seg_idx in range(4):
+        halt_jitter = signed_jitter(seq, length, "halton23")
+        trial_jitter = to_1b2_offset(halt_jitter, seg_idx)
+        dist = _dist_squared(trial_jitter, ref_jitter)
+        if dist < min_dist:
+            min_dist = dist
+            best_index = seg_idx
+    return best_index
+
+
 # -----------------------------------------------------------------------------
 # Args
 # -----------------------------------------------------------------------------
@@ -167,15 +222,16 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--out", default="//mrq_out")
     p.add_argument("--start", type=int, default=None)
     p.add_argument("--end", type=int, default=None)
+    p.add_argument("--frame-offset", type=int, default=0, help="Add an offset to the frame number sequence offset")
     p.add_argument("--camera", default=None)
     p.add_argument("--samples", type=int, default=64, help="Spatial subsamples per frame (jitter sequence length)")
     p.add_argument("--jitter", choices=["halton23", "pmj", "mixed"], default="halton23")
-    p.add_argument("--chosen", type=int, default=None, help="Force this subsample index as the chosen one")
+    #p.add_argument("--chosen", type=int, default=None, help="Force this subsample index as the chosen one")
     p.add_argument("--chosen-mode", choices=["fixed", "center_nearest"], default="center_nearest",
                    help="fixed: index 0; center_nearest: the jitter closest to the pixel center")
     p.add_argument("--resolution-x", type=int, default=None)
     p.add_argument("--resolution-y", type=int, default=None)
-    p.add_argument("--engine", choices=["CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH"], default=None)
+    p.add_argument("--engine", choices=["CYCLES", "BLENDER_EEVEE", "BLENDER_WORKBENCH"], default=None)
     p.add_argument("--cycles-render-samples", type=int, default=1)
     p.add_argument("--save-all-subsamples", action="store_true",
                    help="Keep every subsample EXR on disk (named sample_XXXX_...). Default: temp subsamples are deleted after accumulation.")
@@ -1209,8 +1265,8 @@ def main() -> None:
     end = args.end if args.end is not None else scene.frame_end
     if end < start:
         raise RuntimeError(f"Invalid frame range: start={start}, end={end}")
-    if args.samples < 1:
-        raise RuntimeError("--samples must be >= 1")
+    #if args.samples < 1:
+    #    raise RuntimeError("--samples must be >= 1")
 
     out_dir = blender_abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
@@ -1220,11 +1276,7 @@ def main() -> None:
     print(f"[MRQ v19] blend={bpy.data.filepath}", flush=True)
     print(f"[MRQ v19] out={out_dir} engine={scene.render.engine} camera={cam.name}", flush=True)
     print(f"[MRQ v19] resolution={scene.render.resolution_x}x{scene.render.resolution_y} "
-          f"frames={start}-{end} samples={args.samples} jitter={args.jitter}", flush=True)
-
-    chosen = choose_subsample(args.samples, args)
-    cjx, cjy = signed_jitter(chosen, args.samples, args.jitter)
-    print(f"[MRQ v19] chosen_sub_index={chosen} jitter=({cjx:+.8f},{cjy:+.8f})px", flush=True)
+          f"frames={start}-{end} jitter={args.jitter}", flush=True)
 
     records: List[FrameRecord] = []
 
@@ -1236,63 +1288,29 @@ def main() -> None:
             pass
         frame_dir = os.path.join(out_dir, f"frame_{frame:04d}")
         os.makedirs(frame_dir, exist_ok=True)
+        
+        adjusted_frame = frame + args.frame_offset
+        ref_jitter = signed_jitter(adjusted_frame, args.samples, "pmj")
+        Seq, Seg = get_optimal_seq_seg_indices(ref_jitter, args.samples)
+        chosen_jitter = signed_jitter(Seq, args.samples, "halton23")
 
-        rec = FrameRecord(frame=frame, chosen_sub_index=chosen)
+        rec = FrameRecord(frame=frame, chosen_sub_index=Seq)
         acc_sum = None
         acc_count = 0
         raw_depth_path = ""
         raw_vector_path = ""
-
-        for sample in range(args.samples):
-            jx, jy = signed_jitter(sample, args.samples, args.jitter)
-            rec.jitters_pixels.append([jx, jy])
-            is_chosen = sample == chosen
-
-            if is_chosen:
-                filename = f"chosen_sample_{sample:04d}_jx_{jx:+.8f}_jy_{jy:+.8f}.exr"
-            elif args.save_all_subsamples:
-                filename = f"sample_{sample:04d}_jx_{jx:+.8f}_jy_{jy:+.8f}.exr"
-            else:
-                filename = f"__tmp_sample_{sample:04d}.exr"
-            path = os.path.join(frame_dir, filename)
-
-            with_passes = is_chosen and not args.no_passes
-            info = render_subsample(scene, cam, path, frame, jx, jy, with_passes, args)
-
-            if args.dry_run:
-                continue
-            if not (info["exists"] and info["bytes"] > 0):
-                raise RuntimeError(f"Subsample render produced no file: {path}")
-
-            # Accumulate (requirement 6): average of all jittered subsamples.
-            if not args.no_accumulate:
-                arr = load_exr_rgba(path).astype(np.float64)
-                acc_sum = arr if acc_sum is None else acc_sum + arr
-                acc_count += 1
-
-            if is_chosen:
-                rec.chosen_beauty = path
-                raw_depth_path = info["raw_passes"].get("depth", {}).get("path", "")
-                raw_vector_path = info["raw_passes"].get("vector", {}).get("path", "")
-            elif args.save_all_subsamples:
-                rec.subsample_files.append(path)
-            else:
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
-
-        if args.dry_run:
-            records.append(rec)
-            continue
-
-        if not args.no_accumulate and acc_sum is not None and acc_count > 0:
-            acc = (acc_sum / float(acc_count)).astype(np.float32)
-            acc[..., 3] = np.clip(acc[..., 3], 0.0, 1.0)
-            acc_path = os.path.join(frame_dir, "accumulated.exr")
-            save_exr_rgba(acc_path, acc)
-            rec.accumulated = acc_path
-            print(f"[MRQ v19] frame {frame}: accumulated {acc_count} subsamples -> {acc_path}", flush=True)
+        
+        filename = f"NPP_beauty_{adjusted_frame:04d}_{Seq:04d}_{Seg:01d}_{chosen_jitter[0]:+.8f}_{chosen_jitter[1]:+.8f}.exr"
+        path = os.path.join(frame_dir, filename)
+        
+        with_passes = not args.no_passes
+        info = render_subsample(scene, cam, path, frame, chosen_jitter[0], chosen_jitter[1], with_passes, args)
+        
+        if not (info["exists"] and info["bytes"] > 0):
+            raise RuntimeError(f"Chosen jittered sample render produced no file: {path}")
+        rec.chosen_beauty = path
+        raw_depth_path = info["raw_passes"].get("depth", {}).get("path", "")
+        raw_vector_path = info["raw_passes"].get("vector", {}).get("path", "")
 
         if not args.no_passes:
             ndc = postprocess_chosen_passes(frame_dir, raw_depth_path, raw_vector_path, cam, scene, args)
@@ -1323,8 +1341,6 @@ def main() -> None:
         "frames": [start, end],
         "samples": args.samples,
         "jitter": args.jitter,
-        "chosen_sub_index": chosen,
-        "chosen_jitter_pixels": [cjx, cjy],
         "depth_ndc_mode": args.depth_ndc_mode,
         "ray_depth_correction": args.ray_depth,
         "mv_components": args.mv_components,
