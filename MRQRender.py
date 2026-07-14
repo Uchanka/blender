@@ -1065,7 +1065,7 @@ def depth_to_ndc(depth: np.ndarray, cam, mode: str) -> np.ndarray:
 
 
 def postprocess_chosen_passes(frame_dir: str, raw_depth_path: str, raw_vector_path: str,
-                              cam, scene: bpy.types.Scene, args: argparse.Namespace) -> dict:
+                              cam, scene: bpy.types.Scene, args: argparse.Namespace, mvdname_override: str = "") -> dict:
     """Convert the chosen sample's raw Blender passes to NDC and write:
     chosen_depth_ndc.exr, chosen_mv_ndc.exr, chosen_mvdepth_ndc.exr."""
     result = {}
@@ -1132,7 +1132,8 @@ def postprocess_chosen_passes(frame_dir: str, raw_depth_path: str, raw_vector_pa
         out[..., 3] = 1.0
         if args.flip_y:
             out = out[::-1]
-        p = os.path.join(frame_dir, "chosen_mvdepth_ndc.exr")
+        mvdname = mvdname_override or "chosen_mvdepth_ndc.exr"
+        p = os.path.join(frame_dir, mvdname)
         save_exr_rgba(p, out)
         result["mvdepth_ndc"] = p
     return result
@@ -1191,6 +1192,8 @@ def render_subsample(scene: bpy.types.Scene, cam, path: str, frame: int,
     old_group = temp_group = None
     raw_passes = {}
     try:
+        
+        
         dx = jx / float(width)
         dy = -jy / float(height)
         cam.data.shift_x = old_shift_x + dx
@@ -1286,8 +1289,9 @@ def main() -> None:
             bpy.context.view_layer.update()
         except Exception:
             pass
-        frame_dir = os.path.join(out_dir, f"frame_{frame:04d}")
-        os.makedirs(frame_dir, exist_ok=True)
+        #frame_dir = os.path.join(out_dir, f"frame_{frame:04d}")
+        #os.makedirs(frame_dir, exist_ok=True)
+        frame_dir = out_dir
         
         adjusted_frame = frame + args.frame_offset
         ref_jitter = signed_jitter(adjusted_frame, args.samples, "pmj")
@@ -1300,7 +1304,8 @@ def main() -> None:
         raw_depth_path = ""
         raw_vector_path = ""
         
-        filename = f"NPP_beauty_{adjusted_frame:04d}_{Seq:04d}_{Seg:01d}_{chosen_jitter[0]:+.8f}_{chosen_jitter[1]:+.8f}.exr"
+        filename = f"NPP_beauty_{adjusted_frame:04d}_{Seq:04d}_{Seg:01d}_{chosen_jitter[0]:.8f}_{chosen_jitter[1]:.8f}.exr"
+        mvdname = filename.replace("NPP_beauty", "MVD_beauty")
         path = os.path.join(frame_dir, filename)
         
         with_passes = not args.no_passes
@@ -1313,7 +1318,7 @@ def main() -> None:
         raw_vector_path = info["raw_passes"].get("vector", {}).get("path", "")
 
         if not args.no_passes:
-            ndc = postprocess_chosen_passes(frame_dir, raw_depth_path, raw_vector_path, cam, scene, args)
+            ndc = postprocess_chosen_passes(frame_dir, raw_depth_path, raw_vector_path, cam, scene, args, mvdname_override=mvdname)
             rec.depth_ndc = ndc.get("depth_ndc", "")
             rec.mv_ndc = ndc.get("mv_ndc", "")
             rec.mvdepth_ndc = ndc.get("mvdepth_ndc", "")
@@ -1327,6 +1332,12 @@ def main() -> None:
                             os.remove(p)
                         except Exception:
                             pass
+        
+        gtname = f"NPP_beauty_{adjusted_frame:04d}.exr"
+        gtpath = os.path.join(frame_dir, gtname)
+        gtinfo = render_subsample(scene, cam, gtpath, frame, 0.0, 0.0, with_passes=False, args=args)
+        if not (gtinfo["exists"] and gtinfo["bytes"] > 0):
+            raise RuntimeError(f"Ground-truth render produced no file: {gtpath}")
 
         records.append(rec)
         print(f"[MRQ v19] frame {frame} done: chosen={os.path.basename(rec.chosen_beauty) if rec.chosen_beauty else '-'} "
