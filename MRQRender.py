@@ -1192,10 +1192,14 @@ def render_subsample(scene: bpy.types.Scene, cam, path: str, frame: int,
     old_group = temp_group = None
     raw_passes = {}
     try:
+        fit = getattr(cam.data, "sensor_fit", "AUTO")
+        if fit == "VERTICAL" or (fit == "AUTO" and height > width):
+            shift_base = float(height)
+        else:
+            shift_base = float(width)
+        dx = jx / shift_base
+        dy = -jy / shift_base
         
-        
-        dx = jx / float(width)
-        dy = -jy / float(height)
         cam.data.shift_x = old_shift_x + dx
         cam.data.shift_y = old_shift_y + dy
         scene.render.filepath = path
