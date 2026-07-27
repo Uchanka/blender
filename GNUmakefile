@@ -380,7 +380,7 @@ endif
 #
 
 CMAKE_CONFIG = cmake $(CMAKE_CONFIG_ARGS) \
-                     -H"$(BLENDER_DIR)" \
+                     -S"$(BLENDER_DIR)" \
                      -B"$(BUILD_DIR)" \
                      -DCMAKE_BUILD_TYPE_INIT:STRING=$(BUILD_TYPE)
 
@@ -451,7 +451,7 @@ deps: .FORCE
 	@echo
 	@echo Configuring dependencies in \"$(DEPS_BUILD_DIR)\", install to \"$(DEPS_INSTALL_DIR)\"
 
-	@cmake -H"$(DEPS_SOURCE_DIR)" \
+	@cmake -S"$(DEPS_SOURCE_DIR)" \
 	       -B"$(DEPS_BUILD_DIR)" \
 	       -DHARVEST_TARGET=$(DEPS_INSTALL_DIR)
 
@@ -508,7 +508,7 @@ project_qtcreator: .FORCE
 	$(PYTHON) tools/utils_ide/cmake_qtcreator_project.py --build-dir "$(BUILD_DIR)"
 
 project_eclipse: .FORCE
-	cmake -G"Eclipse CDT4 - Unix Makefiles" -H"$(BLENDER_DIR)" -B"$(BUILD_DIR)"
+	cmake -G"Eclipse CDT4 - Unix Makefiles" -S"$(BLENDER_DIR)" -B"$(BUILD_DIR)"
 
 
 # -----------------------------------------------------------------------------
@@ -623,8 +623,8 @@ source_archive: .FORCE
 source_archive_complete: .FORCE
 	@cmake \
 	    -S "$(BLENDER_DIR)/build_files/build_environment" -B"$(BUILD_DIR)/source_archive" \
-	    -DCMAKE_BUILD_TYPE_INIT:STRING=$(BUILD_TYPE) -DPACKAGE_USE_UPSTREAM_SOURCES=OFF
-# This assumes CMake is still using a default `PACKAGE_DIR` variable:
+	    -DCMAKE_BUILD_TYPE_INIT:STRING=$(BUILD_TYPE) -DPACKAGE_USE_UPSTREAM_SOURCES=OFF -DPACKAGE_DOWNLOAD_ONLY=ON
+# This assumes the CMake build_environment `PACKAGE_DIR` variable wasn't modified:
 	@$(PYTHON) ./build_files/utils/make_source_archive.py --include-packages "$(BUILD_DIR)/source_archive/packages"
 # We assume that the tests will not change for minor releases so only package them for major versions
 	@$(PYTHON) ./build_files/utils/make_source_archive.py --package-test-data

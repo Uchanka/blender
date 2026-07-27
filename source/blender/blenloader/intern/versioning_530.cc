@@ -31,8 +31,47 @@ namespace blender {
 
 // static CLG_LogRef LOG = {"blend.doversion"};
 
-void do_versions_after_linking_530(FileData * /*fd*/, Main * /*bmain*/)
+static void do_version_set_grease_pencil_colors_options_to_inputs(bNodeTree &ntree, bNode &node)
 {
+  if (blender::bke::node_find_socket(node, SOCK_IN, "Mode"_ustr)) {
+    return;
+  }
+  bNodeSocket &socket = version_node_add_socket(ntree, node, SOCK_IN, "NodeSocketMenu", "Mode");
+  socket.default_value_typed<bNodeSocketValueMenu>()->value = node.custom1;
+}
+
+static void do_version_set_grease_pencil_depth_options_to_inputs(bNodeTree &ntree, bNode &node)
+{
+  if (blender::bke::node_find_socket(node, SOCK_IN, "Depth Order"_ustr)) {
+    return;
+  }
+  bNodeSocket &socket = version_node_add_socket(
+      ntree, node, SOCK_IN, "NodeSocketMenu", "Depth Order");
+  socket.default_value_typed<bNodeSocketValueMenu>()->value = node.custom1;
+}
+
+static void do_version_merge_layers_options_to_inputs(bNodeTree &ntree, bNode &node)
+{
+  if (!version_node_ensure_storage_or_invalidate(node)) {
+    return;
+  }
+
+  auto &storage = *reinterpret_cast<NodeGeometryMergeLayers *>(node.storage);
+
+  if (blender::bke::node_find_socket(node, SOCK_IN, "Mode"_ustr)) {
+    return;
+  }
+  bNodeSocket &socket = version_node_add_socket(ntree, node, SOCK_IN, "NodeSocketMenu", "Mode");
+  socket.default_value_typed<bNodeSocketValueMenu>()->value = storage.mode;
+}
+
+void do_versions_after_linking_530(FileData * /*fd*/, Main *bmain)
+{
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 503, 8)) {
+    version_node_socket_index_animdata(
+        bmain, NTREE_GEOMETRY, "GeometryNodeSetGreasePencilColor", 5, 1, 6);
+  }
+
   /**
    * Always bump subversion in BKE_blender_version.h when adding versioning
    * code here, and wrap it inside a MAIN_VERSION_FILE_ATLEAST check.
@@ -128,6 +167,38 @@ void blo_do_versions_530(FileData * /*fd*/, Library * /*lib*/, Main *bmain)
     }
   }
 
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 503, 8)) {
+    FOREACH_NODETREE_BEGIN (bmain, node_tree, id_owner) {
+      for (bNode &node : node_tree->nodes) {
+        if (STREQ(node.idname, "GeometryNodeSetGreasePencilColor")) {
+          do_version_set_grease_pencil_colors_options_to_inputs(*node_tree, node);
+        }
+        if (STREQ(node.idname, "GeometryNodeSetGreasePencilDepth")) {
+          do_version_set_grease_pencil_depth_options_to_inputs(*node_tree, node);
+        }
+        if (STREQ(node.idname, "GeometryNodeMergeLayers")) {
+          do_version_merge_layers_options_to_inputs(*node_tree, node);
+        }
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 503, 9)) {
+    for (Brush &brush : bmain->brushes) {
+      if (brush.curve_hardness == nullptr) {
+        brush.curve_hardness = brush.paint_flags & BRUSH_PAINT_HARDNESS_PRESSURE_INVERT ?
+                                   BKE_paint_default_curve_inverted() :
+                                   BKE_paint_default_curve();
+      }
+      if (brush.curve_auto_smooth == nullptr) {
+        brush.curve_auto_smooth = BKE_paint_default_curve_inverted();
+      }
+      if (brush.curve_spacing == nullptr) {
+        brush.curve_spacing = BKE_paint_default_curve();
+      }
+    }
+  }
   /**
    * Always bump subversion in BKE_blender_version.h when adding versioning
    * code here, and wrap it inside a MAIN_VERSION_FILE_ATLEAST check.

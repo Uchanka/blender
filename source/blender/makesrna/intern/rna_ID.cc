@@ -2425,6 +2425,14 @@ static void rna_def_ID(BlenderRNA *brna)
       "same across renames and internal reallocations, unchanged when reloading the file");
   RNA_def_property_clear_flag(prop, PROP_EDITABLE);
 
+  prop = RNA_def_property(srna, "deep_hash", PROP_STRING, PROP_BYTESTRING);
+  RNA_def_property_string_sdna(prop, nullptr, "deep_hash.data");
+  RNA_def_property_ui_text(
+      prop,
+      "Linked Packed Deep Hash",
+      "Hash representing a unique version of a packed linked data and all of its dependencies");
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+
   prop = RNA_def_property(srna, "is_evaluated", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_ui_text(
       prop,
@@ -2789,8 +2797,8 @@ static void rna_def_library(BlenderRNA *brna)
   RNA_def_property_ui_text(prop,
                            "Library Overrides Need resync",
                            "True if this library contains library overrides that are linked in "
-                           "current blendfile, and that had to be recursively resynced on load "
-                           "(it is recommended to open and re-save that library blendfile then)");
+                           "current blend-file, and that had to be recursively resynced on load "
+                           "(it is recommended to open and re-save that library blend-file then)");
 
   prop = RNA_def_property(srna, "is_editable", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "runtime->tag", LIBRARY_ASSET_EDITABLE);

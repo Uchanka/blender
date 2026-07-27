@@ -100,17 +100,6 @@ static bool is_valid_boundary_edge(BMEdge *e, const char hflag, const bool check
   return true;
 }
 
-struct CircularizeEdgeTestParams {
-  char hflag;
-  const bool *check_axis;
-};
-
-static bool bm_edge_circularize_test_cb(BMEdge *e, void *user_data)
-{
-  const auto *params = static_cast<const CircularizeEdgeTestParams *>(user_data);
-  return is_valid_boundary_edge(e, params->hflag, params->check_axis);
-}
-
 /** Collects all valid boundary edge chains from the current selection. */
 static void bm_vert_chain_extract_from_boundary_edges(BMesh *bm,
                                                       Vector<VertChain> &r_chains,
@@ -121,12 +110,12 @@ static void bm_vert_chain_extract_from_boundary_edges(BMesh *bm,
   const BMEdgeLoopFind_Params params = {
       .use_vert_junction = true,
   };
-  CircularizeEdgeTestParams test_params = {
-      .hflag = hflag,
-      .check_axis = check_axis,
-  };
 
-  BM_mesh_edgeloops_find(bm, &eloops, bm_edge_circularize_test_cb, &test_params, &params);
+  BM_mesh_edgeloops_find(
+      bm,
+      &eloops,
+      [&](BMEdge *e) { return is_valid_boundary_edge(e, hflag, check_axis); },
+      &params);
 
   for (BMEdgeLoopStore &el_store : eloops) {
     VertChain chain;
@@ -142,8 +131,13 @@ static void bm_vert_chain_extract_from_boundary_edges(BMesh *bm,
   BM_mesh_edgeloops_free(&eloops);
 }
 
-/** Computes the local coordinate system defining the 2D plane of the vertex chain. */
-static float3x3 bm_vert_chain_orientation_matrix_calc(Span<BMVert *> chain, float3 &r_center)
+/**
+ * Computes the local coordinate system defining the 2D plane of the vertex chain.
+ * \return success, false when the matrix could not be computed.
+ */
+static bool bm_vert_chain_orientation_matrix_calc(Span<BMVert *> chain,
+                                                  float3 &r_center,
+                                                  float3x3 &r_mat)
 {
   r_center = float3(0.0f);
   for (BMVert *v : chain) {
@@ -158,6 +152,11 @@ static float3x3 bm_vert_chain_orientation_matrix_calc(Span<BMVert *> chain, floa
     add_newell_cross_v3_v3v3(normal, prev->co, curr->co);
     prev = curr;
   }
+
+  if (math::length(normal) < CIRCULARIZE_EPSILON) {
+    return false;
+  }
+
   normal = math::normalize(normal);
   float3 guess = float3(1.0f, 0.0f, 0.0f);
 
@@ -170,11 +169,10 @@ static float3x3 bm_vert_chain_orientation_matrix_calc(Span<BMVert *> chain, floa
 
   float3 p = math::normalize(math::cross(normal, guess));
   float3 q = math::cross(normal, p);
-  float3x3 mat;
-  mat.x_axis() = p;
-  mat.y_axis() = q;
-  mat.z_axis() = normal;
-  return mat;
+  r_mat.x_axis() = p;
+  r_mat.y_axis() = q;
+  r_mat.z_axis() = normal;
+  return true;
 }
 
 /** Projects 3D vertex coordinates onto a local 2D plane defined by the P and Q basis vectors. */
@@ -212,6 +210,7 @@ static void calculate_circle_best_fit(Span<CircleVert> verts,
   /* Initial guesses. */
   float2 initial_center = float2(0.0f);
   float initial_radius = 1.0f;
+  bool converged = false;
 
   for (int iter = 0; iter < NON_LINEAR_LEAST_SQUARES_MAX_ITERATIONS; iter++) {
     float3x3 normal_matrix = float3x3::zero();
@@ -250,8 +249,20 @@ static void calculate_circle_best_fit(Span<CircleVert> verts,
     if (std::abs(delta.x) < CIRCULARIZE_EPSILON && std::abs(delta.y) < CIRCULARIZE_EPSILON &&
         std::abs(delta.z) < CIRCULARIZE_EPSILON)
     {
+      converged = true;
       break;
     }
+  }
+
+  if (!converged) {
+    /* Fallback for the best fit circle in the scenario that the Gauss-Newton solver
+     * fails to converge. */
+    initial_center = float2(0.0f);
+    initial_radius = 0.0f;
+    for (const CircleVert &cv : verts) {
+      initial_radius += math::length(cv.co_2d);
+    }
+    initial_radius /= verts.size();
   }
 
   r_center = initial_center;
@@ -568,12 +579,21 @@ void bmo_circularize_exec(BMesh *bm, BMOperator *op)
       normal_accum += float3(v->no);
     }
     float3 center_3d;
-    float3x3 mat = bm_vert_chain_orientation_matrix_calc(chain, center_3d);
+    float3x3 mat;
+    if (!bm_vert_chain_orientation_matrix_calc(chain, center_3d, mat)) {
+      BMO_error_raise(
+          bm, op, BMO_ERROR_CANCEL, "Selection requires at least 3 non-collinear vertices");
+      return;
+    }
 
     /* Reverse the chain winding if the Newell normal opposes the cumulative vertex normal. */
     if (math::dot(mat.z_axis(), normal_accum) < 0.0f) {
       std::reverse(chain.begin(), chain.end());
-      mat = bm_vert_chain_orientation_matrix_calc(chain, center_3d);
+      if (!bm_vert_chain_orientation_matrix_calc(chain, center_3d, mat)) {
+        BMO_error_raise(
+            bm, op, BMO_ERROR_CANCEL, "Selection requires at least 3 non-collinear vertices");
+        return;
+      }
     }
 
     bool is_mirrored = false;

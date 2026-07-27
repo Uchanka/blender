@@ -22,6 +22,7 @@
 
 #include "RNA_define.hh"
 #include "RNA_enum_types.hh"
+#include "RNA_path.hh"
 #include "RNA_types.hh"
 #include "rna_internal.hh"
 
@@ -667,7 +668,7 @@ static void rna_Strip_right_handle_offset_set(PointerRNA *ptr, float value)
   Scene *scene = id_cast<Scene *>(ptr->owner_id);
 
   seq::relations_invalidate_cache(scene, strip);
-  strip->endofs = value;
+  strip->end_offset_set(value);
 }
 
 static void rna_Strip_content_trim_start_set(PointerRNA *ptr, int value)
@@ -701,7 +702,7 @@ static void rna_Strip_content_trim_end_range(
   Strip *strip = static_cast<Strip *>(ptr->data);
 
   *min = 0;
-  *max = strip->len + strip->anim_endofs - strip->startofs - strip->endofs - 1;
+  *max = strip->content_length() + strip->anim_endofs - strip->startofs - strip->end_offset() - 1;
 }
 
 static void rna_Strip_content_trim_start_range(
@@ -710,7 +711,8 @@ static void rna_Strip_content_trim_start_range(
   Strip *strip = static_cast<Strip *>(ptr->data);
 
   *min = 0;
-  *max = strip->len + strip->anim_startofs - strip->startofs - strip->endofs - 1;
+  *max = strip->content_length() + strip->anim_startofs - strip->startofs - strip->end_offset() -
+         1;
 }
 
 static void rna_Strip_left_handle_range(
@@ -751,7 +753,7 @@ static void rna_Strip_left_handle_offset_range(
 {
   Strip *strip = static_cast<Strip *>(ptr->data);
   *min = INT_MIN;
-  *max = strip->len - strip->endofs - 1;
+  *max = strip->content_length() - strip->end_offset() - 1;
 }
 
 static void rna_Strip_right_handle_offset_range(
@@ -759,7 +761,7 @@ static void rna_Strip_right_handle_offset_range(
 {
   Strip *strip = static_cast<Strip *>(ptr->data);
   *min = INT_MIN;
-  *max = strip->len - strip->startofs - 1;
+  *max = strip->content_length() - strip->startofs - 1;
 }
 
 static void rna_Strip_duration_set(PointerRNA *ptr, int value)
@@ -973,7 +975,6 @@ static void rna_Strip_name_set(PointerRNA *ptr, const char *value)
   Scene *scene = id_cast<Scene *>(ptr->owner_id);
   Strip *strip = static_cast<Strip *>(ptr->data);
   char oldname[sizeof(strip->name)];
-  AnimData *adt;
 
   seq::prefetch_stop(scene);
 
@@ -985,26 +986,14 @@ static void rna_Strip_name_set(PointerRNA *ptr, const char *value)
 
   /* make sure the name is unique */
   seq::strip_unique_name_set(scene, &scene->ed->seqbase, strip);
-  /* fix all the animation data which may link to this */
 
-  /* Don't rename everywhere because these are per scene. */
-#  if 0
-  BKE_animdata_fix_paths_rename_all(
-      nullptr, "sequence_editor.strips_all", oldname, strip->name + 2);
-#  endif
-  adt = BKE_animdata_from_id(&scene->id);
-  if (adt) {
-    BKE_animdata_fix_paths_rename(&scene->id,
-                                  adt,
-                                  nullptr,
-                                  "sequence_editor.strips_all",
-                                  oldname,
-                                  strip->name + 2,
-                                  0,
-                                  0,
-                                  /*verify_paths=*/true,
-                                  /*infix_is_name=*/true);
-  }
+  /* Fix all the animation data which may link to this. */
+  BKE_animdata_fix_paths(scene->id,
+                         "sequence_editor.strips_all",
+                         RNA_path_name_to_infix(oldname),
+                         RNA_path_name_to_infix(strip->name + 2),
+                         /*verify_paths=*/true,
+                         *G_MAIN);
 }
 
 static int rna_Strip_text_length(PointerRNA *ptr)
@@ -1646,7 +1635,6 @@ static void rna_StripModifier_name_set(PointerRNA *ptr, const char *value)
   Scene *scene = id_cast<Scene *>(ptr->owner_id);
   Editing *ed = seq::editing_get(scene);
   Strip *strip = strip_get_by_modifier(ed, smd);
-  AnimData *adt;
   char oldname[sizeof(smd->name)];
 
   /* make a copy of the old name first */
@@ -1659,25 +1647,14 @@ static void rna_StripModifier_name_set(PointerRNA *ptr, const char *value)
   seq::modifier_unique_name(strip, smd);
 
   /* fix all the animation data which may link to this */
-  adt = BKE_animdata_from_id(&scene->id);
-  if (adt) {
-    char rna_path_prefix[1024];
-
-    char strip_name_esc[(sizeof(strip->name) - 2) * 2];
-    BLI_str_escape(strip_name_esc, strip->name + 2, sizeof(strip_name_esc));
-
-    SNPRINTF(rna_path_prefix, "sequence_editor.strips_all[\"%s\"].modifiers", strip_name_esc);
-    BKE_animdata_fix_paths_rename(&scene->id,
-                                  adt,
-                                  nullptr,
-                                  rna_path_prefix,
-                                  oldname,
-                                  smd->name,
-                                  0,
-                                  0,
-                                  /*verify_paths=*/true,
-                                  /*infix_is_name=*/true);
-  }
+  std::string rna_path_prefix = fmt::format("sequence_editor.strips_all{}.modifiers",
+                                            RNA_path_name_to_infix(strip->name + 2));
+  BKE_animdata_fix_paths(scene->id,
+                         rna_path_prefix,
+                         RNA_path_name_to_infix(oldname),
+                         RNA_path_name_to_infix(smd->name),
+                         /* verify_paths= */ true,
+                         *G_MAIN);
 }
 
 static void rna_StripModifier_is_active_set(PointerRNA *ptr, bool value)

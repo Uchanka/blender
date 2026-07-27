@@ -6,6 +6,8 @@
  * \ingroup spseq
  */
 
+#include "CLG_log.h"
+
 #include "BLI_fileops.hh"
 #include "BLI_listbase.hh"
 #include "BLI_math_vector_c.hh"
@@ -63,6 +65,7 @@
 #include "RNA_prototypes.hh"
 
 #include "ED_fileselect.hh"
+#include "ED_image.hh"
 #include "ED_numinput.hh"
 #include "ED_object.hh"
 #include "ED_scene.hh"
@@ -70,6 +73,7 @@
 #include "ED_screen_types.hh"
 #include "ED_sequencer.hh"
 
+#include "UI_interface.hh"
 #include "UI_interface_layout.hh"
 #include "UI_resources.hh"
 #include "UI_view2d.hh"
@@ -82,6 +86,8 @@
 #include <fmt/format.h>
 
 namespace blender::ed::vse {
+
+static CLG_LogRef LOG = {"seq.edit"};
 
 /* -------------------------------------------------------------------- */
 /** \name Public Context Checks
@@ -953,12 +959,12 @@ static SlipData *slip_data_init(bContext *C, const wmOperator *op, const wmEvent
     strip->runtime->flag |= seq::StripRuntimeFlag::ShowOffsets;
 
     /* If any strips start out with hold offsets visible, disable clamping on initialization. */
-    if (strip->startofs < 0 || strip->endofs < 0) {
+    if (strip->startofs < 0 || strip->end_offset() < 0) {
       data->clamp = false;
     }
     /* If any strips do not have enough underlying content to
      * fill their bounds, show a warning. */
-    if (strip->len < strip->right_handle(scene) - strip->left_handle()) {
+    if (strip->content_length() < strip->right_handle(scene) - strip->left_handle()) {
       data->clamp_warning = true;
     }
     /* Strip exists with enough content, we can clamp. */
@@ -1087,7 +1093,7 @@ static float slip_apply_clamp(const Scene *scene, const SlipData *data, float *r
 
       /* Clamp hold offsets if the option is currently enabled
        * and if there are enough frames to fill the strip. */
-      if (data->clamp && strip->len >= right_handle - left_handle) {
+      if (data->clamp && strip->content_length() >= right_handle - left_handle) {
         if (unclamped_start > left_handle) {
           diff = left_handle - unclamped_start;
         }
@@ -2506,7 +2512,7 @@ static wmOperatorStatus sequencer_add_duplicate_exec(bContext *C, wmOperator *op
     strip->runtime->flag |= seq::StripRuntimeFlag::IgnoreChannelLock;
 
     seq::animation_duplicate_backup_to_scene(scene, strip, &animation_backup);
-    seq::ensure_unique_name(strip, scene);
+    seq::ensure_unique_name(*bmain, strip, scene);
   }
 
   /* Special case for duplicating strips in preview: handle overlap, because strips won't be
@@ -2777,7 +2783,8 @@ static wmOperatorStatus sequencer_offset_clear_exec(bContext *C, wmOperator * /*
     }
 
     if (!strip->is_effect() && (strip->flag & SEQ_SELECT)) {
-      strip->startofs = strip->endofs = 0;
+      strip->startofs = 0;
+      strip->end_offset_set(0);
     }
   }
 
@@ -2841,7 +2848,9 @@ static wmOperatorStatus sequencer_separate_images_exec(bContext *C, wmOperator *
   seq::prefetch_stop(scene);
 
   while (strip) {
-    if ((strip->flag & SEQ_SELECT) && (strip->type == STRIP_TYPE_IMAGE) && (strip->len > 1)) {
+    if ((strip->flag & SEQ_SELECT) && (strip->type == STRIP_TYPE_IMAGE) &&
+        (strip->content_length() > 1))
+    {
       Strip *strip_next;
 
       /* TODO: remove f-curve and assign to split image strips.
@@ -2859,9 +2868,9 @@ static wmOperatorStatus sequencer_separate_images_exec(bContext *C, wmOperator *
 
         strip_new->start = start_ofs;
         strip_new->type = STRIP_TYPE_IMAGE;
-        strip_new->len = 1;
+        strip_new->content_length_set(1);
         strip_new->flag |= SEQ_SINGLE_FRAME_CONTENT;
-        strip_new->endofs = 1 - step;
+        strip_new->end_offset_set(1 - step);
 
         /* New strip. */
         StripData *data_new = strip_new->data;
@@ -3045,7 +3054,7 @@ static wmOperatorStatus sequencer_meta_make_exec(bContext *C, wmOperator * /*op*
   BLI_strncpy_utf8(strip_meta->name + 2, DATA_("MetaStrip"), sizeof(strip_meta->name) - 2);
   seq::strip_unique_name_set(scene, &ed->seqbase, strip_meta);
   strip_meta->start = meta_start_frame;
-  strip_meta->len = meta_end_frame - meta_start_frame;
+  strip_meta->content_length_set(meta_end_frame - meta_start_frame);
   seq::select_active_set(scene, strip_meta);
   if (seq::transform_test_overlap(scene, active_seqbase, strip_meta)) {
     seq::transform_seqbase_shuffle(active_seqbase, strip_meta, scene);
@@ -3620,7 +3629,7 @@ static wmOperatorStatus sequencer_change_effect_type_exec(bContext *C, wmOperato
   BLI_string_split_name_number(strip->name + 2, '.', name_base, &name_num);
   if (STREQ(name_base, seq::get_default_stripname_by_type(old_type))) {
     seq::edit_strip_name_set(scene, strip, seq::strip_give_name(strip));
-    seq::ensure_unique_name(strip, scene);
+    seq::ensure_unique_name(*CTX_data_main(C), strip, scene);
   }
 
   /* Init new effect. */
@@ -3672,20 +3681,19 @@ static wmOperatorStatus sequencer_change_path_exec(bContext *C, wmOperator *op)
   Strip *strip = seq::select_active_get(scene);
   const bool is_relative_path = RNA_boolean_get(op->ptr, "relative_path");
   const bool use_placeholders = RNA_boolean_get(op->ptr, "use_placeholders");
-  int minext_frameme, numdigits;
 
   if (strip->type == STRIP_TYPE_IMAGE) {
     char directory[FILE_MAX];
-    int len;
+    int len = 0;
     StripElem *se;
 
-    /* Need to find min/max frame for placeholders. */
-    if (use_placeholders) {
-      len = sequencer_image_strip_get_minmax_frame(op, strip->sfra, &minext_frameme, &numdigits);
+    const char *blendfile_path = BKE_main_blendfile_path(bmain);
+    ListBaseT<ImageFrameRange> ranges = ED_image_filesel_detect_sequences(
+        blendfile_path, blendfile_path, op, false);
+    for (ImageFrameRange &range : ranges) {
+      len += use_placeholders ? range.max_framenr - range.offset + 1 : range.frames.count();
     }
-    else {
-      len = RNA_property_collection_length(op->ptr, RNA_struct_find_property(op->ptr, "files"));
-    }
+
     if (len == 0) {
       return OPERATOR_CANCELLED;
     }
@@ -3704,17 +3712,37 @@ static wmOperatorStatus sequencer_change_path_exec(bContext *C, wmOperator *op)
     }
     strip->data->stripdata = se = MEM_new_array<StripElem>(len, "stripelem");
 
-    if (use_placeholders) {
-      sequencer_image_strip_reserve_frames(op, se, len, minext_frameme, numdigits);
-    }
-    else {
-      RNA_BEGIN (op->ptr, itemptr, "files") {
-        std::string filename = RNA_string_get(&itemptr, "name");
-        STRNCPY(se->filename, filename.c_str());
-        se++;
+    for (ImageFrameRange &range : ranges) {
+      int framenr, numdigits;
+      if (!BLI_path_frame_get(range.filepath, &framenr, &numdigits)) {
+        numdigits = 0;
       }
-      RNA_END;
+      char ext[FILE_MAX];
+      char filename_stripped[FILE_MAX];
+      BLI_path_split_file_part(range.filepath, filename_stripped, sizeof(filename_stripped));
+      BLI_path_frame_strip(filename_stripped, ext, sizeof(ext));
+
+      if (use_placeholders) {
+        for (const int i : IndexRange::from_begin_end(range.offset, range.max_framenr + 1)) {
+          frame_filename_set(
+              se->filename, sizeof(se->filename), filename_stripped, i, numdigits, ext);
+          se++;
+        }
+      }
+      else {
+        for (ImageFrame &frame : range.frames) {
+          frame_filename_set(se->filename,
+                             sizeof(se->filename),
+                             filename_stripped,
+                             frame.framenr,
+                             numdigits,
+                             ext);
+          se++;
+        }
+      }
+      range.frames.free_no_destruct();
     }
+    ranges.free_no_destruct();
 
     if (len == 1) {
       strip->flag |= SEQ_SINGLE_FRAME_CONTENT;
@@ -3787,6 +3815,29 @@ static wmOperatorStatus sequencer_change_path_invoke(bContext *C,
   return OPERATOR_RUNNING_MODAL;
 }
 
+static bool sequencer_change_path_draw_check_prop(PointerRNA * /*ptr*/,
+                                                  PropertyRNA *prop,
+                                                  void *user_data)
+{
+  wmOperator *op = static_cast<wmOperator *>(user_data);
+  const char *prop_id = RNA_property_identifier(prop);
+  if (prop_id == StringRef("use_placeholders")) {
+    return RNA_boolean_get(op->ptr, "use_sequence_detection");
+  }
+  return true;
+}
+
+static void sequencer_change_path_draw(bContext * /*C*/, wmOperator *op)
+{
+  uiDefAutoButsRNA(op->layout,
+                   op->ptr,
+                   sequencer_change_path_draw_check_prop,
+                   op,
+                   nullptr,
+                   ui::BUT_LABEL_ALIGN_NONE,
+                   false);
+}
+
 void SEQUENCER_OT_change_path(wmOperatorType *ot)
 {
   /* Identifiers. */
@@ -3797,6 +3848,7 @@ void SEQUENCER_OT_change_path(wmOperatorType *ot)
   ot->exec = sequencer_change_path_exec;
   ot->invoke = sequencer_change_path_invoke;
   ot->poll = sequencer_strip_has_path_poll;
+  ot->ui = sequencer_change_path_draw;
 
   /* Flags. */
   ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
@@ -3809,6 +3861,15 @@ void SEQUENCER_OT_change_path(wmOperatorType *ot)
                                      WM_FILESEL_FILES,
                                  FILE_DEFAULTDISPLAY,
                                  FILE_SORT_DEFAULT);
+
+  /* Required for `ED_image_filesel_detect_sequences`. */
+  RNA_def_boolean(
+      ot->srna,
+      "use_sequence_detection",
+      true,
+      "Detect Sequences",
+      "Automatically detect animated sequences in selected images (based on file names)");
+
   RNA_def_boolean(ot->srna,
                   "use_placeholders",
                   false,
@@ -4466,37 +4527,29 @@ void SEQUENCER_OT_cursor_set(wmOperatorType *ot)
 /** \name Update scene strip frame range
  * \{ */
 
-static wmOperatorStatus sequencer_scene_frame_range_update_exec(bContext *C, wmOperator * /*op*/)
+static wmOperatorStatus sequencer_scene_frame_range_update_exec(bContext * /*C*/,
+                                                                wmOperator * /*op*/)
 {
-  Scene *scene = CTX_data_sequencer_scene(C);
-  Editing *ed = seq::editing_get(scene);
-  Strip *strip = ed->act_strip;
-
-  const int old_start = strip->left_handle();
-  const int old_end = strip->right_handle(scene);
-
-  Scene *target_scene = strip->scene;
-
-  strip->len = target_scene->r.efra - target_scene->r.sfra + 1;
-  strip->handles_set(scene, old_start, old_end);
-
-  seq::relations_invalidate_cache_raw(scene, strip);
-  DEG_id_tag_update(&scene->id, ID_RECALC_AUDIO | ID_RECALC_SEQUENCER_STRIPS);
-  WM_event_add_notifier(C, NC_SPACE | ND_SPACE_SEQUENCER, nullptr);
+  CLOG_WARN(&LOG,
+            "SEQUENCER_OT_scene_frame_range_update is deprecated and will be removed in 6.0. "
+            "Operator has no effect.");
   return OPERATOR_FINISHED;
 }
 
 static bool sequencer_scene_frame_range_update_poll(bContext *C)
 {
+  /* Operator is deprecated but logic is kept for backward compatibility. */
   Editing *ed = seq::editing_get(CTX_data_sequencer_scene(C));
   return (ed != nullptr && ed->act_strip != nullptr && ed->act_strip->type == STRIP_TYPE_SCENE);
 }
 
+/* Todo: remove in 6.0. */
 void SEQUENCER_OT_scene_frame_range_update(wmOperatorType *ot)
 {
   /* identifiers */
   ot->name = "Update Scene Frame Range";
-  ot->description = "Update frame range of scene strip";
+  ot->description =
+      "Update frame range of scene strip. Deprecated. Has no effect, will be removed in 6.0.";
   ot->idname = "SEQUENCER_OT_scene_frame_range_update";
 
   /* API callbacks. */

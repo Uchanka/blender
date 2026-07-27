@@ -396,11 +396,16 @@ static int rna_ensure_property_array_length(PointerRNA *ptr, PropertyRNA *prop)
 {
   if (prop->magic == RNA_MAGIC) {
     int arraylen[RNA_MAX_ARRAY_DIMENSION];
-    return (prop->getlength && ptr->data) ? prop->getlength(ptr, arraylen) :
-                                            int(prop->totarraylength);
+    if (prop->getlength && ptr->data) {
+      BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
+      return prop->getlength(ptr, arraylen);
+    }
+    else {
+      return int(prop->totarraylength);
+    }
   }
-  IDProperty *idprop = reinterpret_cast<IDProperty *>(prop);
 
+  IDProperty *idprop = reinterpret_cast<IDProperty *>(prop);
   if (idprop->type == IDP_ARRAY) {
     return idprop->len;
   }
@@ -423,6 +428,7 @@ static void rna_ensure_property_multi_array_length(const PointerRNA *ptr,
 {
   if (prop->magic == RNA_MAGIC) {
     if (prop->getlength) {
+      BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
       prop->getlength(ptr, length);
     }
     else {
@@ -532,6 +538,18 @@ static PropertyRNA *arraytypemap[IDP_NUMTYPES] = {
     &rna_PropertyGroupItem_bool_array,
 };
 
+bool rna_property_can_access_pointer_data(const PointerRNA &ptr, PropertyRNA &prop)
+{
+  const bool is_meta_type = ptr.type && (ptr.type->flag & STRUCT_RNA_DEFINITION) != 0;
+  const bool is_prop_of_meta_type = (prop.flag_internal & PROP_INTERN_RNA_DEFINITION) != 0;
+  const bool is_prop_builtin = (prop.flag_internal & PROP_INTERN_BUILTIN) != 0;
+  BLI_assert((prop.magic == RNA_MAGIC && (prop.flag & PROP_IDPROPERTY) == 0) || !is_meta_type);
+  /* Builtin props (`Struct::properties` only currently?) are always accessible.
+   * Any property should be accessible in a non-meta type PointerRNA, even the meta-type ones.
+   * Only properties of meta-types should be accessible in a meta-type. */
+  return is_prop_builtin || !is_meta_type || is_prop_of_meta_type;
+}
+
 void rna_property_rna_or_id_get(PropertyRNA *prop,
                                 PointerRNA *ptr,
                                 PropertyRNAOrID *r_prop_rna_or_id)
@@ -547,6 +565,8 @@ void rna_property_rna_or_id_get(PropertyRNA *prop,
   r_prop_rna_or_id->ptr = ptr;
   r_prop_rna_or_id->rawprop = prop;
 
+  const bool is_ptr_data_usable = rna_property_can_access_pointer_data(*ptr, *prop);
+
   if (prop->magic == RNA_MAGIC) {
     r_prop_rna_or_id->rnaprop = prop;
     r_prop_rna_or_id->identifier = prop->identifier;
@@ -554,7 +574,9 @@ void rna_property_rna_or_id_get(PropertyRNA *prop,
     r_prop_rna_or_id->is_array = prop->getlength || prop->totarraylength;
     if (r_prop_rna_or_id->is_array) {
       int arraylen[RNA_MAX_ARRAY_DIMENSION];
-      r_prop_rna_or_id->array_len = (prop->getlength && ptr->data) ?
+      /* Do not call actual data callbacks on definition data (i.e. it `ptr` is a struct or
+       * property definition, and not the actual data type). See e.g. #161362. */
+      r_prop_rna_or_id->array_len = (prop->getlength && ptr->data && is_ptr_data_usable) ?
                                         uint(prop->getlength(ptr, arraylen)) :
                                         prop->totarraylength;
     }
@@ -1688,9 +1710,10 @@ StructRNA *RNA_property_pointer_type(PointerRNA *ptr, PropertyRNA *prop)
   prop = rna_ensure_property(prop);
 
   if (prop->type == PROP_POINTER) {
+    const bool is_ptr_data_usable = rna_property_can_access_pointer_data(*ptr, *prop);
     PointerPropertyRNA *pprop = reinterpret_cast<PointerPropertyRNA *>(prop);
 
-    if (pprop->type_fn) {
+    if (pprop->type_fn && is_ptr_data_usable) {
       return pprop->type_fn(ptr);
     }
     if (pprop->pointer_type) {
@@ -1698,6 +1721,7 @@ StructRNA *RNA_property_pointer_type(PointerRNA *ptr, PropertyRNA *prop)
     }
   }
   else if (prop->type == PROP_COLLECTION) {
+    BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
     CollectionPropertyRNA *cprop = reinterpret_cast<CollectionPropertyRNA *>(prop);
 
     if (cprop->item_type) {
@@ -1718,6 +1742,7 @@ bool RNA_property_pointer_poll(PointerRNA *ptr, PropertyRNA *prop, PointerRNA *v
     return false;
   }
 
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
   PointerPropertyRNA *pprop = reinterpret_cast<PointerPropertyRNA *>(prop);
 
   /* Can't point from linked to local datablock. */
@@ -1787,6 +1812,13 @@ void RNA_property_enum_items_ex(bContext *C,
                             ((ptr->type->flag & STRUCT_NO_CONTEXT_WITHOUT_OWNER_ID) &&
                              (ptr->owner_id == nullptr));
     if (C != nullptr || no_context) {
+      /* FIXME: Currently, the enum item_fn callback can be called in various situations, mixing
+       * 'valid' regular PointerRNA data, and e.g. meta-data like Function PointerRNA (see e.g.
+       * `brush_type` properties, using the same items callback in both actual data
+       * (`WorkSpaceTool` struct) and function definition (`WorkSpaceTool::setup()`).
+       *
+       * This should probably be sanitized at some point, but for now, this code cannot assert on
+       * `rna_property_can_access_pointer_data(*ptr, *eprop)`. */
       const EnumPropertyItem *item;
 
       item = eprop->item_fn(no_context ? nullptr : C, ptr, prop, r_free);
@@ -1920,6 +1952,13 @@ void RNA_property_enum_items_gettexted_all(bContext *C,
                             ((ptr->type->flag & STRUCT_NO_CONTEXT_WITHOUT_OWNER_ID) &&
                              (ptr->owner_id == nullptr));
     if (C != nullptr || no_context) {
+      /* FIXME: Currently, the enum item_fn callback can be called in various situations, mixing
+       * 'valid' regular PointerRNA data, and e.g. meta-data like Function PointerRNA (see e.g.
+       * `brush_type` properties, using the same items callback in both actual data
+       * (`WorkSpaceTool` struct) and function definition (`WorkSpaceTool::setup()`).
+       *
+       * This should probably be sanitized at some point, but for now, this code cannot assert on
+       * `rna_property_can_access_pointer_data(*ptr, *eprop)`. */
       const EnumPropertyItem *item;
       int i;
       bool free = false;
@@ -2293,9 +2332,11 @@ static bool rna_property_editable_do(const PointerRNA *ptr,
   PropertyRNA *prop = rna_ensure_property(prop_orig);
 
   const char *info = "";
-  const int flag = (prop->itemeditable != nullptr && index >= 0) ?
-                       prop->itemeditable(ptr, index) :
-                       (prop->editable != nullptr ? prop->editable(ptr, &info) : prop->flag);
+  const PropertyFlag flag = (prop->itemeditable != nullptr && index >= 0) ?
+                                PropertyFlag(prop->itemeditable(ptr, index)) :
+                                (prop->editable != nullptr ?
+                                     PropertyFlag(prop->editable(ptr, &info)) :
+                                     prop->flag);
   if (r_info != nullptr) {
     *r_info = info;
   }
@@ -2366,11 +2407,11 @@ bool RNA_property_editable_info(const PointerRNA *ptr, PropertyRNA *prop, const 
 
 bool RNA_property_editable_flag(const PointerRNA *ptr, PropertyRNA *prop)
 {
-  int flag;
+  PropertyFlag flag;
   const char *dummy_info;
 
   prop = rna_ensure_property(prop);
-  flag = prop->editable ? prop->editable(ptr, &dummy_info) : prop->flag;
+  flag = prop->editable ? PropertyFlag(prop->editable(ptr, &dummy_info)) : prop->flag;
   return (flag & PROP_EDITABLE) != 0;
 }
 
@@ -2622,6 +2663,7 @@ bool RNA_property_boolean_get(PointerRNA *ptr, PropertyRNA *prop)
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   BoolPropertyRNA *bprop = reinterpret_cast<BoolPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *bprop));
 
   bool value = property_boolean_get(ptr, prop_rna_or_id);
   if (bprop->get_transform) {
@@ -2642,6 +2684,7 @@ void RNA_property_boolean_set(PointerRNA *ptr, PropertyRNA *prop, bool value)
   prop = nullptr;
   IDProperty *idprop = prop_rna_or_id.idprop;
   BoolPropertyRNA *bprop = reinterpret_cast<BoolPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *bprop));
 
   if (bprop->set_transform) {
     /* Get raw, untransformed (aka 'storage') value. */
@@ -2782,6 +2825,7 @@ void RNA_property_boolean_get_array(PointerRNA *ptr, PropertyRNA *prop, bool *va
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   BoolPropertyRNA *bprop = reinterpret_cast<BoolPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *bprop));
 
   MutableSpan<bool> r_values(values, int64_t(prop_rna_or_id.array_len));
   values = nullptr; /* Do not access this 'raw' pointer anymore in code below. */
@@ -2855,6 +2899,7 @@ void RNA_property_boolean_set_array(PointerRNA *ptr, PropertyRNA *prop, const bo
   IDProperty *idprop = prop_rna_or_id.idprop;
   PropertyRNA *rna_prop = prop_rna_or_id.rnaprop;
   BoolPropertyRNA *bprop = reinterpret_cast<BoolPropertyRNA *>(rna_prop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *bprop));
 
   const int64_t values_num = int64_t(prop_rna_or_id.array_len);
   Span<bool> final_values(values, values_num);
@@ -2992,6 +3037,7 @@ bool RNA_property_boolean_get_default(PointerRNA *ptr, PropertyRNA *prop)
 {
   /* TODO: Make defaults work for IDProperties. */
   BoolPropertyRNA *bprop = reinterpret_cast<BoolPropertyRNA *>(rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *bprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_BOOLEAN);
   BLI_assert(RNA_property_array_check(prop) == false);
@@ -3027,6 +3073,7 @@ bool RNA_property_boolean_get_default(PointerRNA *ptr, PropertyRNA *prop)
 void RNA_property_boolean_get_default_array(PointerRNA *ptr, PropertyRNA *prop, bool *values)
 {
   BoolPropertyRNA *bprop = reinterpret_cast<BoolPropertyRNA *>(rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *bprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_BOOLEAN);
   BLI_assert(RNA_property_array_check(prop) != false);
@@ -3132,6 +3179,7 @@ int RNA_property_int_get(PointerRNA *ptr, PropertyRNA *prop)
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   IntPropertyRNA *iprop = reinterpret_cast<IntPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *iprop));
 
   int value = property_int_get(ptr, prop_rna_or_id);
   if (iprop->get_transform) {
@@ -3152,6 +3200,7 @@ void RNA_property_int_set(PointerRNA *ptr, PropertyRNA *prop, int value)
   prop = nullptr;
   IDProperty *idprop = prop_rna_or_id.idprop;
   IntPropertyRNA *iprop = reinterpret_cast<IntPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *iprop));
 
   if (iprop->set_transform) {
     /* Get raw, untransformed (aka 'storage') value. */
@@ -3255,6 +3304,7 @@ void RNA_property_int_get_array(PointerRNA *ptr, PropertyRNA *prop, int *values)
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   IntPropertyRNA *iprop = reinterpret_cast<IntPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *iprop));
 
   MutableSpan<int> r_values(values, int64_t(prop_rna_or_id.array_len));
   values = nullptr; /* Do not access this 'raw' pointer anymore in code below. */
@@ -3360,6 +3410,7 @@ void RNA_property_int_set_array(PointerRNA *ptr, PropertyRNA *prop, const int *v
   IDProperty *idprop = prop_rna_or_id.idprop;
   PropertyRNA *rna_prop = prop_rna_or_id.rnaprop;
   IntPropertyRNA *iprop = reinterpret_cast<IntPropertyRNA *>(rna_prop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *iprop));
 
   const int64_t values_num = int64_t(prop_rna_or_id.array_len);
   Span<int> final_values(values, values_num);
@@ -3462,6 +3513,7 @@ void RNA_property_int_set_index(PointerRNA *ptr, PropertyRNA *prop, int index, i
 int RNA_property_int_get_default(PointerRNA *ptr, PropertyRNA *prop)
 {
   IntPropertyRNA *iprop = reinterpret_cast<IntPropertyRNA *>(rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *iprop));
 
   if (prop->magic != RNA_MAGIC) {
     const IDProperty *idprop = reinterpret_cast<const IDProperty *>(prop);
@@ -3496,6 +3548,7 @@ bool RNA_property_int_set_default(PropertyRNA *prop, int value)
 void RNA_property_int_get_default_array(PointerRNA *ptr, PropertyRNA *prop, int *values)
 {
   IntPropertyRNA *iprop = reinterpret_cast<IntPropertyRNA *>(rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *iprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_INT);
   BLI_assert(RNA_property_array_check(prop) != false);
@@ -3583,6 +3636,7 @@ float RNA_property_float_get(PointerRNA *ptr, PropertyRNA *prop)
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   FloatPropertyRNA *fprop = reinterpret_cast<FloatPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *fprop));
 
   float value = property_float_get(ptr, prop_rna_or_id);
   if (fprop->get_transform) {
@@ -3603,6 +3657,7 @@ void RNA_property_float_set(PointerRNA *ptr, PropertyRNA *prop, float value)
   prop = nullptr;
   IDProperty *idprop = prop_rna_or_id.idprop;
   FloatPropertyRNA *fprop = reinterpret_cast<FloatPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *fprop));
 
   if (fprop->set_transform) {
     /* Get raw, untransformed (aka 'storage') value. */
@@ -3738,6 +3793,7 @@ void RNA_property_float_get_array(PointerRNA *ptr, PropertyRNA *prop, float *val
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   FloatPropertyRNA *fprop = reinterpret_cast<FloatPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *fprop));
 
   MutableSpan<float> r_values(values, int64_t(prop_rna_or_id.array_len));
   values = nullptr; /* Do not access this 'raw' pointer anymore in code below. */
@@ -3843,6 +3899,7 @@ void RNA_property_float_set_array(PointerRNA *ptr, PropertyRNA *prop, const floa
   IDProperty *idprop = prop_rna_or_id.idprop;
   PropertyRNA *rna_prop = prop_rna_or_id.rnaprop;
   FloatPropertyRNA *fprop = reinterpret_cast<FloatPropertyRNA *>(rna_prop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *fprop));
 
   const int64_t values_num = int64_t(prop_rna_or_id.array_len);
   Span<float> final_values(values, values_num);
@@ -3956,6 +4013,7 @@ void RNA_property_float_set_index(PointerRNA *ptr, PropertyRNA *prop, int index,
 float RNA_property_float_get_default(PointerRNA *ptr, PropertyRNA *prop)
 {
   FloatPropertyRNA *fprop = reinterpret_cast<FloatPropertyRNA *>(rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *fprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_FLOAT);
   BLI_assert(RNA_property_array_check(prop) == false);
@@ -3994,6 +4052,7 @@ bool RNA_property_float_set_default(PropertyRNA *prop, float value)
 void RNA_property_float_get_default_array(PointerRNA *ptr, PropertyRNA *prop, float *values)
 {
   FloatPropertyRNA *fprop = reinterpret_cast<FloatPropertyRNA *>(rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *fprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_FLOAT);
   BLI_assert(RNA_property_array_check(prop) != false);
@@ -4110,6 +4169,7 @@ std::string RNA_property_string_get(PointerRNA *ptr, PropertyRNA *prop)
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   StringPropertyRNA *sprop = reinterpret_cast<StringPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *sprop));
 
   std::string string_ret = property_string_get(ptr, prop_rna_or_id);
   if (sprop->get_transform) {
@@ -4165,6 +4225,7 @@ int RNA_property_string_length(PointerRNA *ptr, PropertyRNA *prop)
    * `sprop->property` should be used when access to an actual RNA property is required.
    */
   StringPropertyRNA *sprop = reinterpret_cast<StringPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *sprop));
 
   /* If there is a `get_transform` callback, no choice but get that final string to find out its
    * length. Otherwise, get the 'storage length', which is typically more efficient to compute. */
@@ -4185,6 +4246,7 @@ void RNA_property_string_set(PointerRNA *ptr, PropertyRNA *prop, const char *val
   prop = nullptr;
   IDProperty *idprop = prop_rna_or_id.idprop;
   StringPropertyRNA *sprop = reinterpret_cast<StringPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *sprop));
 
   /* Value can be nullptr, see #145562. */
   /* FIXME: unclear if this function is supposed to accept nullptr values? */
@@ -4227,6 +4289,7 @@ void RNA_property_string_set_bytes(PointerRNA *ptr, PropertyRNA *prop, const cha
   prop = nullptr;
   IDProperty *idprop = prop_rna_or_id.idprop;
   StringPropertyRNA *sprop = reinterpret_cast<StringPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *sprop));
 
   std::string value_set = {value, size_t(len)};
   if (sprop->set_transform) {
@@ -4280,6 +4343,7 @@ void RNA_property_string_get_default(PointerRNA *ptr,
   }
 
   BLI_assert(RNA_property_type(prop) == PROP_STRING);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *sprop));
 
   if (sprop->get_default) {
     std::string default_value = sprop->get_default(ptr, prop);
@@ -4371,6 +4435,7 @@ void RNA_property_string_search(const bContext *C,
 {
   BLI_assert(RNA_property_string_search_flag(prop) & PROP_STRING_SEARCH_SUPPORTED);
   StringPropertyRNA *sprop = reinterpret_cast<StringPropertyRNA *>(rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *sprop));
   sprop->search(C, ptr, prop, edit_text, visit_fn);
 }
 
@@ -4381,6 +4446,7 @@ std::optional<std::string> RNA_property_string_path_filter(const bContext *C,
   BLI_assert(RNA_property_type(prop) == PROP_STRING);
   PropertyRNA *rna_prop = rna_ensure_property(prop);
   StringPropertyRNA *sprop = reinterpret_cast<StringPropertyRNA *>(rna_prop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *sprop));
   if (!sprop->path_filter) {
     return std::nullopt;
   }
@@ -4412,6 +4478,7 @@ int RNA_property_enum_get(PointerRNA *ptr, PropertyRNA *prop)
   /* Make initial `prop` pointer invalid, to ensure that it is not used anywhere below. */
   prop = nullptr;
   EnumPropertyRNA *eprop = reinterpret_cast<EnumPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *eprop));
 
   int value = property_enum_get(ptr, prop_rna_or_id);
   if (eprop->get_transform) {
@@ -4432,6 +4499,7 @@ void RNA_property_enum_set(PointerRNA *ptr, PropertyRNA *prop, int value)
   prop = nullptr;
   IDProperty *idprop = prop_rna_or_id.idprop;
   EnumPropertyRNA *eprop = reinterpret_cast<EnumPropertyRNA *>(prop_rna_or_id.rnaprop);
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *eprop));
 
   if (eprop->set_transform) {
     /* Get raw, untransformed (aka 'storage') value. */
@@ -4472,6 +4540,7 @@ int RNA_property_enum_get_default(PointerRNA *ptr, PropertyRNA *prop)
       return ui_data->default_value;
     }
   }
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *eprop));
   if (eprop->get_default) {
     return eprop->get_default(ptr, prop);
   }
@@ -4539,6 +4608,7 @@ static PointerRNA property_pointer_get(PointerRNA *ptr, PropertyRNA *prop, const
     /* for groups, data is idprop itself */
     return RNA_pointer_create_with_parent(*ptr, type, idprop);
   }
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
   if (pprop->get) {
     return pprop->get(ptr);
   }
@@ -4573,6 +4643,7 @@ void RNA_property_pointer_set(PointerRNA *ptr,
   /* Detect IDProperty and retrieve the actual PropertyRNA pointer before cast. */
   IDProperty *idprop = rna_idproperty_check(&prop, ptr);
 
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
   PointerPropertyRNA *pprop = reinterpret_cast<PointerPropertyRNA *>(prop);
   BLI_assert(RNA_property_type(prop) == PROP_POINTER);
 
@@ -4828,6 +4899,7 @@ void RNA_property_collection_begin(PointerRNA *ptr,
     iter->idprop = 1;
   }
   else {
+    BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
     CollectionPropertyRNA *cprop = reinterpret_cast<CollectionPropertyRNA *>(prop);
     cprop->begin(iter, ptr);
   }
@@ -4899,6 +4971,7 @@ int RNA_property_collection_length(PointerRNA *ptr, PropertyRNA *prop)
   if ((idprop = rna_idproperty_check(&prop, ptr))) {
     return idprop->len;
   }
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *prop));
   if (cprop->length) {
     return cprop->length(ptr);
   }
@@ -5203,6 +5276,7 @@ bool RNA_property_collection_lookup_int(PointerRNA *ptr,
 {
   CollectionPropertyRNA *cprop = reinterpret_cast<CollectionPropertyRNA *>(
       rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *cprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_COLLECTION);
 
@@ -5235,6 +5309,7 @@ bool RNA_property_collection_lookup_string_index(
 {
   CollectionPropertyRNA *cprop = reinterpret_cast<CollectionPropertyRNA *>(
       rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *cprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_COLLECTION);
 
@@ -5308,6 +5383,7 @@ bool RNA_property_collection_assign_int(PointerRNA *ptr,
 {
   CollectionPropertyRNA *cprop = reinterpret_cast<CollectionPropertyRNA *>(
       rna_ensure_property(prop));
+  BLI_assert(rna_property_can_access_pointer_data(*ptr, *cprop));
 
   BLI_assert(RNA_property_type(prop) == PROP_COLLECTION);
 
