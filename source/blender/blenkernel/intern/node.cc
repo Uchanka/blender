@@ -96,6 +96,7 @@
 #include "NOD_geo_foreach_geometry_element.hh"
 #include "NOD_geo_index_switch.hh"
 #include "NOD_geo_menu_switch.hh"
+#include "NOD_geo_rasterize_points.hh"
 #include "NOD_geo_repeat.hh"
 #include "NOD_geo_simulation.hh"
 #include "NOD_geometry_nodes_gizmos.hh"
@@ -5744,9 +5745,9 @@ std::string node_label(const bNodeTree &ntree, const bNode &node)
 std::optional<StringRefNull> node_socket_short_label(const bNodeSocket &sock)
 {
   if (sock.runtime->declaration != nullptr) {
-    StringRefNull short_label = sock.runtime->declaration->short_label;
+    const UString short_label = sock.runtime->declaration->short_label;
     if (!short_label.is_empty()) {
-      return sock.runtime->declaration->short_label.data();
+      return short_label.ref();
     }
   }
   return std::nullopt;
