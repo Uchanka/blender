@@ -1,0 +1,1 @@
+blender.exe -b E:\BlenderScenes\ALabProduction.blend -P .\MRQRender.py -- --out //mrq_out --jitter halton23 --engine CYCLES --camera renderCam --save-all-subsamples --cycles-render-samples 32

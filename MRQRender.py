@@ -260,6 +260,14 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--compositor-device", choices=["CPU", "GPU", "keep"], default="CPU",
                    help="Execution device for the compositor. Default CPU (avoids the 'Render size too "
                         "large for GPU' fallback path). 'keep' leaves the scene setting untouched.")
+    p.add_argument("--cycles-backend", choices=["OPTIX", "CUDA"], default="OPTIX",
+                   help="Force Cycles GPU backend in background/CLI renders. Default: OPTIX.")
+    p.add_argument("--gpu-device-match", default="",
+                   help="Optional case-insensitive substring used to select a GPU by name "
+                        "(for example 'RTX 5090'). Empty means enable all GPUs exposed by the selected backend.")
+    p.add_argument("--cycles-tile-size", type=int, default=512,
+                   help="Cycles render tile size. Smaller tiles reduce peak memory/texture-cache pressure. "
+                        "Default: 512. Set 0 to keep the scene setting.")
     # --- Sampling semantics -----------------------------------------------------
     p.add_argument("--pixel-filter", choices=["point", "keep"], default="point",
                    help="point (default): shrink the render pixel filter to ~a point (Cycles BOX filter, "
@@ -313,6 +321,13 @@ def configure_scene(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
         scene.cycles.use_denoising = False
         if hasattr(scene.cycles, "use_animated_seed"):
             scene.cycles.use_animated_seed = False
+
+        # Keep peak memory down for large production scenes. In Blender 5.2
+        # smaller Cycles tiles reduce render-buffer pressure and can also reduce
+        # the amount of texture-cache data needed by each tile.
+        if args.cycles_tile_size and hasattr(scene.cycles, "tile_size"):
+            scene.cycles.tile_size = max(8, int(args.cycles_tile_size))
+            print(f"[MRQ v19] cycles.tile_size={scene.cycles.tile_size}", flush=True)
 
         # Blender 5.2's Cycles Texture Cache streams tiled EXR/tx textures via
         # OIIO. It has known race-condition crashes (tiles freed while other
@@ -432,6 +447,89 @@ def configure_scene(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
                     setattr(vl, attr, True)
                 except Exception:
                     pass
+
+
+def configure_cycles_gpu(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
+    """Force Cycles to use GPU Compute in background/CLI mode.
+
+    This deliberately disables the CPU Cycles device so a failed/oversized GPU
+    render cannot silently become a many-hour CPU render. If no matching GPU is
+    found, fail fast with a clear error.
+    """
+    if scene.render.engine != "CYCLES":
+        return
+
+    prefs = bpy.context.preferences
+    addon = prefs.addons.get("cycles")
+    if addon is None:
+        raise RuntimeError("Cycles add-on preferences are unavailable; cannot force GPU rendering")
+
+    cprefs = addon.preferences
+    backend = args.cycles_backend
+
+    try:
+        cprefs.compute_device_type = backend
+    except Exception as exc:
+        available = []
+        try:
+            available = [item[0] for item in cprefs.get_device_types(bpy.context)]
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Could not select Cycles backend {backend!r}; available={available}: {exc}"
+        ) from exc
+
+    # Blender 5.x: refresh_devices() is preferred; get_devices() is retained as
+    # a deprecated compatibility wrapper in the Cycles preferences API.
+    try:
+        if hasattr(cprefs, "refresh_devices"):
+            cprefs.refresh_devices()
+        else:
+            cprefs.get_devices()
+    except Exception as exc:
+        print(f"[MRQ v19] warning: Cycles device refresh failed: {exc}", flush=True)
+
+    match = (args.gpu_device_match or "").strip().lower()
+    enabled = []
+    seen = []
+
+    for dev in cprefs.devices:
+        name = str(getattr(dev, "name", ""))
+        dtype = str(getattr(dev, "type", ""))
+        seen.append((name, dtype))
+
+        # Never allow CPU participation for this forced-GPU path. This also
+        # makes accidental CPU fallback immediately obvious.
+        if dtype == "CPU":
+            try:
+                dev.use = False
+            except Exception:
+                pass
+            continue
+
+        name_matches = (not match) or (match in name.lower())
+        backend_matches = dtype in {backend, "CUDA", "OPTIX"}
+
+        use = bool(name_matches and backend_matches)
+        try:
+            dev.use = use
+        except Exception:
+            pass
+
+        if use:
+            enabled.append((name, dtype))
+
+    scene.cycles.device = "GPU"
+
+    print(f"[MRQ v19] cycles backend={backend} device=GPU", flush=True)
+    print(f"[MRQ v19] Cycles devices seen={seen}", flush=True)
+    print(f"[MRQ v19] Cycles GPUs enabled={enabled}", flush=True)
+
+    if not enabled:
+        raise RuntimeError(
+            f"No matching Cycles GPU found for backend={backend!r}, "
+            f"gpu_device_match={args.gpu_device_match!r}; devices={seen}"
+        )
 
 
 def choose_camera(scene: bpy.types.Scene, name):
@@ -1266,6 +1364,7 @@ def main() -> None:
     args = parse_args(sys.argv)
     scene = bpy.context.scene
     configure_scene(scene, args)
+    configure_cycles_gpu(scene, args)
     cam = choose_camera(scene, args.camera)
 
     start = args.start if args.start is not None else scene.frame_start
